@@ -1,0 +1,3 @@
+packages:
+  - mobile
+  - infra/lambda/sync-engine

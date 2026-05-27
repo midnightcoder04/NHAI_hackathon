@@ -1,0 +1,4 @@
+aws_region  = "ap-south-1"
+account_id  = "<your-aws-account-id>"
+db_password = "<strong-password>"
+webhook_url = ""   # optional

@@ -28,15 +28,15 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 
 **Purpose**: Monorepo scaffolding, workspaces, tooling — must complete before any other work.
 
-- [ ] T001 Create monorepo directory structure: `mobile/`, `infra/lambda/sync-engine/`, `infra/terraform/` with placeholder README.md files per implementation plan
-- [ ] T002 Initialize Expo bare workflow in `mobile/` (`npx create-expo-app mobile --template bare-minimum`) and verify `app.json` with `expo` config for Android 8+ / iOS 14+
-- [ ] T003 [P] Configure TypeScript for `mobile/` workspace: create `mobile/tsconfig.json` extending `expo/tsconfig.base` with strict mode enabled
-- [ ] T004 [P] Configure ESLint + Prettier for `mobile/`: create `mobile/.eslintrc.js` (react-native + typescript rules) and `mobile/.prettierrc`
-- [ ] T005 Initialize Lambda TypeScript project in `infra/lambda/sync-engine/`: `package.json` with `typescript`, `@types/aws-lambda`, `pg`, `aws-sdk` v3; create `tsconfig.json` targeting Node.js 20
-- [ ] T006 [P] Initialize Terraform project in `infra/terraform/`: create `main.tf` with S3 remote state backend block and DynamoDB lock table reference; create `terraform.tfvars.example` placeholder
-- [ ] T007 [P] Create pnpm workspace config at repo root: `pnpm-workspace.yaml` listing `mobile` and `infra/lambda/sync-engine` packages
-- [ ] T008 [P] Configure Jest for `mobile/`: add `jest` config to `mobile/package.json` with `jest-expo` preset, coverage thresholds (≥80% lines, ≥70% branches), and `__tests__/unit/`, `__tests__/integration/`, `__tests__/contract/` directories
-- [ ] T009 [P] Create `mobile/.env.example` with placeholders: `AWS_API_GATEWAY_URL`, `AWS_REGION`, `AWS_COGNITO_IDENTITY_POOL_ID`, `DEVICE_ID_SEED`
+- [x] T001 Create monorepo directory structure: `mobile/`, `infra/lambda/sync-engine/`, `infra/terraform/` with placeholder README.md files per implementation plan
+- [x] T002 Initialize Expo bare workflow in `mobile/` (`npx create-expo-app mobile --template bare-minimum`) and verify `app.json` with `expo` config for Android 8+ / iOS 14+
+- [x] T003 [P] Configure TypeScript for `mobile/` workspace: create `mobile/tsconfig.json` extending `expo/tsconfig.base` with strict mode enabled
+- [x] T004 [P] Configure ESLint + Prettier for `mobile/`: create `mobile/.eslintrc.js` (react-native + typescript rules) and `mobile/.prettierrc`
+- [x] T005 Initialize Lambda TypeScript project in `infra/lambda/sync-engine/`: `package.json` with `typescript`, `@types/aws-lambda`, `pg`, `aws-sdk` v3; create `tsconfig.json` targeting Node.js 20
+- [x] T006 [P] Initialize Terraform project in `infra/terraform/`: create `main.tf` with S3 remote state backend block and DynamoDB lock table reference; create `terraform.tfvars.example` placeholder
+- [x] T007 [P] Create pnpm workspace config at repo root: `pnpm-workspace.yaml` listing `mobile` and `infra/lambda/sync-engine` packages
+- [x] T008 [P] Configure Jest for `mobile/`: add `jest` config to `mobile/package.json` with `jest-expo` preset, coverage thresholds (≥80% lines, ≥70% branches), and `__tests__/unit/`, `__tests__/integration/`, `__tests__/contract/` directories
+- [x] T009 [P] Create `mobile/.env.example` with placeholders: `AWS_API_GATEWAY_URL`, `AWS_REGION`, `AWS_COGNITO_IDENTITY_POOL_ID`, `DEVICE_ID_SEED`
 
 ---
 
