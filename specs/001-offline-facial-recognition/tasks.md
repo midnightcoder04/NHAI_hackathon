@@ -46,18 +46,18 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 
 **⚠️ CRITICAL**: These tasks block every user story phase below.
 
-- [ ] T010 Create `mobile/src/constants/index.ts` with all named constants: `FACE_MATCH_THRESHOLD = 0.75`, `LIVENESS_BLINK_FRAMES = 3`, `SYNC_BATCH_MAX_PERSONNEL = 100`, `SYNC_BATCH_MAX_VERIFICATIONS = 500`, `SYNC_RETRY_MAX_ATTEMPTS = 3`, `SYNC_RETRY_BACKOFF_MS = 5000`, `IMAGE_STORAGE_DIR = 'face_images/'`
-- [ ] T011 [P] Create `mobile/src/models/Personnel.ts` with `SyncStatus` union type and `Personnel` interface per data-model.md TypeScript types
-- [ ] T012 [P] Create `mobile/src/models/FaceImage.ts` with `FaceImage` interface (including `embedding: Float32Array | null`) per data-model.md
-- [ ] T013 [P] Create `mobile/src/models/VerificationRecord.ts` with `VerificationOutcome` union and `VerificationRecord` interface per data-model.md
-- [ ] T014 [P] Create `mobile/src/models/BackupJob.ts` with `BackupStatus` union and `BackupJob` interface per data-model.md
-- [ ] T015 Implement all five SQLite DDL strings in `mobile/src/db/schema.ts` (personnel, face_image, verification_record, backup_job, sync_outbox tables with indexes) exactly matching data-model.md On-Device Schema
-- [ ] T016 Implement SQLite migration runner in `mobile/src/db/migrations.ts` using `expo-sqlite` `openDatabaseAsync` (WAL mode) that executes DDL from `schema.ts` and is idempotent (CREATE TABLE IF NOT EXISTS)
-- [ ] T017 Wire `SQLiteProvider` in `mobile/App.tsx` using `expo-sqlite` SDK 52+ `SQLiteProvider` component so all screens can access the DB via `useSQLiteContext()`
-- [ ] T018 [P] Create `mobile/src/utils/uuid.ts` exporting a `generateUUID()` function using `expo-crypto` or `uuid` v4 for RFC-4122 UUIDs
-- [ ] T019 [P] Create `mobile/src/utils/idempotency.ts` exporting `computeIdempotencyKey(parts: string[]): string` using SHA-256 (via `expo-crypto`) for outbox deduplication keys
-- [ ] T020 [P] Implement `infra/lambda/sync-engine/src/db.ts` with a singleton `pg.Pool` connection pool (reads `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` from environment) with graceful shutdown
-- [ ] T021 [P] Copy RDS PostgreSQL DDL from `specs/001-offline-facial-recognition/contracts/rds-schema.sql` into `infra/lambda/sync-engine/migrations/001_initial.sql` and create a `migrate.ts` script to apply it against the target RDS instance
+- [x] T010 Create `mobile/src/constants/index.ts` with all named constants: `FACE_MATCH_THRESHOLD = 0.75`, `LIVENESS_BLINK_FRAMES = 3`, `SYNC_BATCH_MAX_PERSONNEL = 100`, `SYNC_BATCH_MAX_VERIFICATIONS = 500`, `SYNC_RETRY_MAX_ATTEMPTS = 3`, `SYNC_RETRY_BACKOFF_MS = 5000`, `IMAGE_STORAGE_DIR = 'face_images/'`
+- [x] T011 [P] Create `mobile/src/models/Personnel.ts` with `SyncStatus` union type and `Personnel` interface per data-model.md TypeScript types
+- [x] T012 [P] Create `mobile/src/models/FaceImage.ts` with `FaceImage` interface (including `embedding: Float32Array | null`) per data-model.md
+- [x] T013 [P] Create `mobile/src/models/VerificationRecord.ts` with `VerificationOutcome` union and `VerificationRecord` interface per data-model.md
+- [x] T014 [P] Create `mobile/src/models/BackupJob.ts` with `BackupStatus` union and `BackupJob` interface per data-model.md
+- [x] T015 Implement all five SQLite DDL strings in `mobile/src/db/schema.ts` (personnel, face_image, verification_record, backup_job, sync_outbox tables with indexes) exactly matching data-model.md On-Device Schema
+- [x] T016 Implement SQLite migration runner in `mobile/src/db/migrations.ts` using `expo-sqlite` `openDatabaseAsync` (WAL mode) that executes DDL from `schema.ts` and is idempotent (CREATE TABLE IF NOT EXISTS)
+- [x] T017 Wire `SQLiteProvider` in `mobile/App.tsx` using `expo-sqlite` SDK 52+ `SQLiteProvider` component so all screens can access the DB via `useSQLiteContext()`
+- [x] T018 [P] Create `mobile/src/utils/uuid.ts` exporting a `generateUUID()` function using `expo-crypto` or `uuid` v4 for RFC-4122 UUIDs
+- [x] T019 [P] Create `mobile/src/utils/idempotency.ts` exporting `computeIdempotencyKey(parts: string[]): string` using SHA-256 (via `expo-crypto`) for outbox deduplication keys
+- [x] T020 [P] Implement `infra/lambda/sync-engine/src/db.ts` with a singleton `pg.Pool` connection pool (reads `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` from environment) with graceful shutdown
+- [x] T021 [P] Copy RDS PostgreSQL DDL from `specs/001-offline-facial-recognition/contracts/rds-schema.sql` into `infra/lambda/sync-engine/migrations/001_initial.sql` and create a `migrate.ts` script to apply it against the target RDS instance
 
 **Checkpoint**: Foundation ready — all domain types, schema, and utilities in place. User story phases can now begin.
 
