@@ -46,7 +46,7 @@ The mobile app communicates with AWS via three channels:
       "personnelIdMatched": "string (UUID) | null",
       "initiatedAt": "string (ISO-8601 UTC)",
       "completedAt": "string (ISO-8601 UTC)",
-      "outcome": "authorized | unauthorized | liveness_failed | quality_insufficient",
+      "outcome": "authorized | unauthorized | liveness_failed | low_confidence | quality_insufficient",
       "confidenceScore": "number (0.0–1.0) | null",
       "operatorContext": "string | null",
       "deviceId": "string (UUID)",

@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS verification_record (
   initiated_at         TEXT NOT NULL,       -- ISO-8601 UTC timestamp of attempt start
   completed_at         TEXT NOT NULL,       -- ISO-8601 UTC timestamp of result display
   outcome              TEXT NOT NULL
-                       CHECK(outcome IN ('authorized','unauthorized','liveness_failed','quality_insufficient')),
+                       CHECK(outcome IN ('authorized','unauthorized','liveness_failed','low_confidence','quality_insufficient')),
   confidence_score     REAL,               -- 0.0–1.0; NULL for non-match outcomes
   operator_context     TEXT,               -- free-text: site name, operator notes
   device_id            TEXT NOT NULL,       -- device UUID for multi-device deduplication
@@ -100,9 +100,10 @@ CREATE INDEX idx_verification_initiated ON verification_record(initiated_at);
 
 **State transitions**:
 - `outcome: authorized` — face matched with `confidence_score ≥ threshold` AND liveness passed
-- `outcome: unauthorized` — face did not match any enrolled personnel
+- `outcome: unauthorized` — no enrolled personnel matched above the rejection threshold
 - `outcome: liveness_failed` — liveness detection rejected the capture (spoof attempt or printed photo)
-- `outcome: quality_insufficient` — image quality too low to process (prompt operator to reposition)
+- `outcome: low_confidence` — a match candidate found but `confidence_score` below the acceptance threshold; logged as inconclusive; operator prompted for secondary check (FR-009)
+- `outcome: quality_insufficient` — image quality too low to run inference; operator prompted to reposition camera (FR-011)
 
 ---
 
@@ -202,7 +203,7 @@ CREATE TABLE IF NOT EXISTS verification_record (
   initiated_at         TIMESTAMPTZ NOT NULL,
   completed_at         TIMESTAMPTZ NOT NULL,
   outcome              VARCHAR(32) NOT NULL
-                       CHECK(outcome IN ('authorized','unauthorized','liveness_failed','quality_insufficient')),
+                       CHECK(outcome IN ('authorized','unauthorized','liveness_failed','low_confidence','quality_insufficient')),
   confidence_score     NUMERIC(5,4),
   operator_context     TEXT,
   device_id            VARCHAR(64) NOT NULL,
@@ -260,6 +261,7 @@ export type VerificationOutcome =
   | 'authorized'
   | 'unauthorized'
   | 'liveness_failed'
+  | 'low_confidence'
   | 'quality_insufficient';
 
 export interface VerificationRecord {
