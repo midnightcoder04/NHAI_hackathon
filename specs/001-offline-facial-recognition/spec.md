@@ -83,7 +83,7 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 
 - What happens when device storage is full and a new personnel photo cannot be saved?
 - How does the system handle two personnel with very similar facial features?
-- What happens when the ML model cannot make a confident match (ambiguous result)?
+- What happens when the ML model cannot make a confident match? → Display "Low Confidence — Secondary Check Required"; log outcome as inconclusive.
 - How are verification records handled if the cloud rejects them (e.g., schema mismatch)?
 - What happens if the operator attempts to delete a personnel record while a sync is in progress?
 - How does the system behave when the camera permission is denied by the OS?
@@ -105,7 +105,7 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 - **FR-006**: System MUST access the device camera to capture a live image for verification.
 - **FR-007**: System MUST perform on-device liveness detection before attempting facial matching to prevent photo-based spoofing.
 - **FR-008**: System MUST match the captured live face against all stored personnel profiles and return the closest match or no-match result.
-- **FR-009**: System MUST display a clear authorization result (Authorized / Unauthorized / Liveness Failed) after each verification attempt.
+- **FR-009**: System MUST display a clear authorization result (Authorized / Unauthorized / Liveness Failed / Low Confidence) after each verification attempt. When the ML model cannot make a confident match, the system MUST display "Low Confidence — Secondary Check Required" and log the outcome as inconclusive.
 - **FR-010**: System MUST store a verification record locally after each attempt, including: timestamp, outcome, matched personnel ID (if any), and confidence indicator.
 - **FR-011**: System MUST provide operator guidance (e.g., reposition prompt) when image quality is insufficient for reliable matching.
 
@@ -119,7 +119,7 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 - **FR-014**: System MUST automatically detect when internet connectivity becomes available and initiate a background sync of unsynced records.
 - **FR-015**: System MUST resume interrupted sync operations from the last successfully transferred record (no duplicate uploads).
 - **FR-016**: System MUST track the sync status of each record (pending, in-progress, synced, failed).
-- **FR-017**: System MUST expose an API/interface endpoint to receive synced data, suitable for integration with existing personnel management systems.
+- **FR-017**: System MUST expose an API/interface endpoint to receive synced data, suitable for integration with existing personnel management systems. The cloud backend is implemented as AWS API Gateway + Lambda functions backed by RDS PostgreSQL, all provisioned via Terraform.
 
 **Backup Management**
 
@@ -148,13 +148,26 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 - **SC-007**: System operates without crashes or data loss across a full working day (8+ hours) of offline use with 50+ personnel records.
 - **SC-008**: Integration with an external personnel management system requires no modification to existing system data contracts.
 
+## Clarifications
+
+### Session 2026-05-27
+
+- Q: Which IaC tool should manage AWS infrastructure? → A: Terraform (HCL, remote state in S3 + DynamoDB lock)
+- Q: Which mobile platform and framework? → A: React Native (Expo) — Android + iOS, JS/TS, MLKit integration
+- Q: Which AWS services back the cloud sync endpoint? → A: API Gateway + Lambda + RDS PostgreSQL
+- Q: How does the mobile app authenticate to the cloud API? → A: AWS Cognito Identity Pool (temporary IAM credentials via SigV4, no long-lived secrets on device)
+- Q: How should the system handle an ambiguous/low-confidence facial match? → A: Display "Low Confidence — Secondary Check Required" and log outcome as inconclusive
+
 ## Assumptions
 
 - ML models for facial recognition and liveness detection are provided as pre-built, on-device binaries — model development is out of scope.
 - The device has a functional rear or front camera accessible via standard OS permissions.
 - Operators are non-technical field staff; the UI must require no prior technical training.
 - A single device is used by one operator at a time; multi-device concurrent sync conflict resolution is out of scope for this version.
-- The cloud endpoint for sync is an existing service that accepts the defined data format; this spec covers the client-side sync and the integration interface, not the cloud service build.
+- The cloud sync backend is built as part of this system: AWS API Gateway + Lambda + RDS PostgreSQL, provisioned via Terraform. The integration interface (API contracts) must remain stable for downstream personnel management system consumption.
 - User authentication (login/password for the app itself) is out of scope; physical device security is assumed to be the access control layer.
+- Cloud API access is secured via AWS Cognito Identity Pool. The app obtains temporary IAM credentials (SigV4-signed requests) at sync time; no long-lived API keys or secrets are stored on device. Cognito Identity Pool is provisioned via Terraform.
 - Local data encryption at rest is required but the specific encryption standard is deferred to implementation.
 - The target deployment is a hackathon prototype intended for production integration; therefore, the integration interface must be clean and stable even if other areas remain prototype-grade.
+- All AWS infrastructure MUST be defined and provisioned using Terraform (IaC). Remote state is stored in S3 with DynamoDB state locking. No manual console provisioning is permitted for reproducible resources.
+- The mobile application is built with React Native (Expo), targeting Android and iOS from a single JS/TS codebase. On-device ML integration uses Google MLKit via Expo-compatible native modules.

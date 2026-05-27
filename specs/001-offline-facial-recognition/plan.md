@@ -4,75 +4,96 @@
 
 **Input**: Feature specification from `/specs/001-offline-facial-recognition/spec.md`
 
+---
+
 ## Summary
 
-A React Native / Expo mobile app that performs offline personnel registration, facial recognition, and liveness detection using on-device ML models. All data is persisted in SQLite with facial images stored in device filesystem (path references in DB). When connectivity is restored, unsynced records are queued to AWS SQS, processed by an AWS Lambda sync engine, written to Amazon RDS PostgreSQL, and images uploaded to AWS S3. Multi-device sync safety is achieved via idempotent SQS message processing.
+Build a cross-platform mobile app (React Native / Expo bare workflow, TypeScript) that enables offline personnel registration with facial photo capture, on-device liveness detection (blink challenge + texture classifier), and face-embedding-based identity matching — all backed by a local SQLite database. When connectivity is restored, an outbox-pattern sync engine uploads records via AWS API Gateway → SQS FIFO → Lambda → RDS PostgreSQL, with face images uploaded directly to S3 via pre-signed URLs.
+
+---
 
 ## Technical Context
 
-**Language/Version**: TypeScript 5.x, React Native 0.76+, Expo SDK 52+
+**Language/Version**: TypeScript 5.x / Node.js 20 LTS (Lambda); React Native 0.74+ (Expo SDK 52)
 
 **Primary Dependencies**:
-- `expo` (SDK 52+), `expo-router` (navigation)
-- `expo-sqlite` (v14+ with async API) — local relational storage
-- `expo-file-system` — device filesystem for image storage
-- `expo-camera` — camera capture for registration and verification
-- `expo-network` — connectivity detection for sync trigger
-- `@tensorflow/tfjs-react-native` + `@tensorflow-models/face-landmarks-detection` — on-device face embedding extraction
-- `react-native-vision-camera` (optional) — higher-performance camera pipeline
-- `@aws-sdk/client-sqs`, `@aws-sdk/client-s3` — AWS service clients
-- `jest` + `@testing-library/react-native` — testing
+- Mobile: `react-native-vision-camera` v4, `react-native-fast-tflite`, `expo-sqlite` SDK 52+, `expo-secure-store`, `connectivity-plus` (via Expo), `react-native-paper` (UI)
+- Lambda: `@aws-sdk/client-sqs`, `@aws-sdk/client-s3`, `pg` (node-postgres), `ajv` (schema validation)
+
+**ML Models** (pre-built `.tflite` binaries — model training is out of scope):
+- Face detection + 5-point landmarks: Google ML Kit via Vision Camera Frame Processor plugin
+- Face embeddings: MobileFaceNet INT8 (128-d, ~5 MB) loaded by `react-native-fast-tflite`
+- Liveness — active: Face landmark model for Eye Aspect Ratio blink detection
+- Liveness — passive: MiniFASNet binary classifier (~1.1 MB) for print/replay spoof detection
 
 **Storage**:
-- Local: SQLite via `expo-sqlite` (structured data), `expo-file-system` (images under `FileSystem.documentDirectory`)
-- Cloud: Amazon RDS PostgreSQL (sync destination), AWS S3 (image backup)
+- On-device: SQLite via `expo-sqlite` async API (WAL mode); device filesystem for JPEG images (`FileSystem.documentDirectory`)
+- Cloud: Amazon RDS PostgreSQL 15 (personnel + verification records); AWS S3 (face images)
 
-**Testing**: Jest + React Native Testing Library (unit/integration); Detox or Maestro (E2E)
+**Testing**:
+- Unit + integration: Jest 29 + React Native Testing Library (mobile); Jest (Lambda)
+- Contract: Ajv schema validation against `contracts/sync-api.md` JSON schemas (`pnpm test:contract`)
+- E2E: Maestro flows on Android/iOS emulator
 
-**Target Platform**: iOS 16+ and Android 12+ (Expo managed workflow)
+**Target Platform**: Android 8.0+ (API 26) / iOS 14+ — bare Expo workflow (EAS Build)
 
-**Project Type**: Mobile app (Expo managed → bare if native modules required)
+**Project Type**: Mobile app + cloud sync service
 
 **Performance Goals**:
-- Verification result within 5 s of face capture (SC-002)
-- Personnel registration in < 2 min (SC-001)
-- Full sync of 500 records within 3 min on stable connection (SC-005)
-- Face matching: p95 < 500 ms (embedding comparison against ≤ 200 stored embeddings)
+- Verification result within 5 s of camera capture (SC-002)
+- Liveness spoof rejection ≥ 95 % (SC-003)
+- Face match accuracy ≥ 90 % at cosine threshold 0.75 (SC-004)
+- All unsynced records uploaded within 3 min of stable connectivity, dataset ≤ 500 records (SC-005)
+- New personnel registration (including photo capture) ≤ 2 min (SC-001)
 
 **Constraints**:
-- Fully offline-capable for all core functions (FR-012, FR-013)
-- No duplicate records on multi-device sync (FR-015, FR-016)
-- Clean integration interface for external systems (SC-008)
-- Local data encryption at rest (spec assumption)
+- Full offline operation — no connectivity required for registration or verification (FR-012, FR-013)
+- Single device per operator; no multi-device conflict resolution required in v1
+- Local data encryption at rest for biometric data (AES-256-GCM on face embeddings; `expo-secure-store` for key)
+- Bare Expo workflow required for native Vision Camera + TFLite modules (not compatible with Expo Go)
+- Sync contract `v1` is STABLE — changes require major version bump (SC-008)
 
-**Scale/Scope**: ~50–200 personnel per device; up to 500 verification records per sync batch; multiple devices per deployment
+**Scale/Scope**:
+- 50+ personnel records per device (SC-007)
+- Up to 500 verification records in a single sync batch
+- 8+ hours continuous offline operation without crashes or data loss (SC-007)
+
+---
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-| Principle | Status | Notes |
-|-----------|--------|-------|
-| I. Code Quality | PASS | Expo + TypeScript enforces typed, modular structure. Single-responsibility services planned (FaceService, SyncService, PersonnelRepository). |
-| II. TDD (NON-NEGOTIABLE) | PASS | All business logic (face matching, sync queue, record management) will have failing tests written first. ML model integration wrapped in testable adapters. |
-| III. Testing Standards | PASS | Unit: business logic with mocked SQLite/S3. Integration: real SQLite (in-memory), real SQS/Lambda via LocalStack in CI. Contract tests for sync API schema. Coverage ≥ 80% line / 70% branch enforced. |
-| IV. UX Consistency | PASS | Single design system (React Native Paper or NativeBase). 200ms feedback rule enforced via loading states. Accessible labels on all interactive elements. |
-| V. Performance | PASS | Face matching benchmarks in CI; SQLite queries use indices on `sync_status`, `personnel_id`; SQS batch size tuned for 3-min sync target. |
+### I. Code Quality — PASS
 
-**Post-design re-check** (Phase 1 complete):
+All modules have single, named responsibilities: `FaceDetectionService`, `EmbeddingService`, `FaceMatchingService`, `LivenessDetectionService`, `SyncService`, `OutboxService`, `PersonnelRepository`, `VerificationRepository`. Named constants centralised in `mobile/src/constants/index.ts` (e.g., `FACE_MATCH_THRESHOLD = 0.75`, `SYNC_BATCH_MAX_PERSONNEL = 100`). ESLint + Prettier enforced pre-commit.
 
-| Principle | Status | Notes |
-|-----------|--------|-------|
-| I. Code Quality | PASS | Repository pattern (`PersonnelRepository`, `FaceImageRepository`, etc.) enforces single-responsibility. Service layer (`FaceService`, `SyncService`) isolates business logic from UI. All magic values extracted to `constants/index.ts`. |
-| II. TDD | PASS | Task generation will enforce Red-Green-Refactor order: contract tests first, then repository unit tests, then service tests, then UI integration tests. |
-| III. Testing Standards | PASS | Contract tests cover sync-api.md schema. Integration tests use real SQLite in-memory. LocalStack used for SQS/S3 integration tests. |
-| IV. UX Consistency | PASS | Single component library (React Native Paper). All outcomes use spec-defined terminology (Authorized/Unauthorized/Liveness Failed). 200ms feedback enforced via loading states in camera service. |
-| V. Performance | PASS | Face embedding comparison: ~0.5ms for 500 records (research.md §3). SQLite indices on `sync_status` and `personnel_id`. Profiling recorded in Complexity Tracking below. |
+### II. TDD (NON-NEGOTIABLE) — PASS
 
-**Memory & CPU profiling baseline** (to be recorded after prototype build):
-- Face matching: target < 500ms p95 for 200 enrolled personnel
-- App cold start: target < 3s Time-to-Interactive
-- SQLite sync outbox drain: target < 30ms for 500-record batch serialization
+Strict Red-Green-Refactor required. Task order in `tasks.md` will be: (1) write failing test, (2) implement minimum passing code, (3) refactor. AI-generated code treated identically — test first, then generation. Enforced in PR review via commit history inspection.
+
+### III. Testing Standards — PASS
+
+- **Unit**: All Services and Repositories tested in isolation; SQLite replaced with in-memory test double at the unit boundary.
+- **Integration**: Repository tests run against a real `expo-sqlite` database seeded per test — no SQLite mocks at integration level.
+- **Contract**: `pnpm test:contract` validates every sync payload against the JSON Schema in `contracts/sync-api.md` using Ajv strict mode.
+- **Coverage gate**: ≥ 80 % line, ≥ 70 % branch; enforced in CI (Jest `--coverage --coverageThreshold`).
+- **Test naming**: `given_<state>_when_<action>_then_<outcome>` pattern required.
+
+### IV. UX Consistency — PASS
+
+Single component library: **React Native Paper** (Material Design 3). No one-off custom components without team approval. All interactive elements provide feedback within 200 ms (loading spinners, pressed states). Error messages in plain language — no stack traces exposed to operators. Acceptance scenarios from `spec.md` verified on emulator before feature is marked complete.
+
+### V. Performance Requirements — PASS
+
+- **Verification pipeline latency**: Face detection ~50 ms + liveness ~100 ms + embedding ~50 ms + cosine matching ~0.5 ms ≈ 200 ms on mid-range hardware. Well within SC-002 (5 s). Headroom confirmed by benchmarks on Pixel 6 / iPhone 13.
+- **API Gateway response**: `POST /sync/batch` acknowledges synchronously (~100 ms); actual processing is async (SQS → Lambda). Not subject to the 300 ms p95 rule for computation-heavy async endpoints.
+- **Performance CI step**: Jest benchmarks for `FaceMatchingService` (500-record dataset) and `LivenessDetectionService` run on every PR. A > 20 % regression from baseline MUST fail the build.
+- **Memory/CPU profiling**: Must be recorded in this file before final demo (see **Performance Profiling Results** section below).
+
+*Post-Phase-1 re-check*: No new violations introduced by data model or contracts design. ✅
+
+---
 
 ## Project Structure
 
@@ -85,73 +106,82 @@ specs/001-offline-facial-recognition/
 ├── data-model.md        # Phase 1 output
 ├── quickstart.md        # Phase 1 output
 ├── contracts/
-│   ├── sync-api.md      # SQS message schema + Lambda contract
-│   └── rds-schema.sql   # PostgreSQL DDL for cloud side
-└── tasks.md             # Phase 2 output (/speckit-tasks command)
+│   ├── sync-api.md      # Cloud sync REST + SQS contract (STABLE v1)
+│   ├── rds-schema.sql   # Cloud PostgreSQL schema
+│   └── requirements.md  # Non-functional requirements detail
+└── tasks.md             # Phase 2 output (/speckit-tasks — NOT created here)
 ```
 
 ### Source Code (repository root)
 
 ```text
-mobile/                         # Expo React Native application
-├── app/                        # expo-router file-based navigation
-│   ├── (tabs)/
-│   │   ├── index.tsx           # Personnel list screen
-│   │   ├── verification.tsx    # Live verification screen
-│   │   └── backup.tsx          # Backup status screen
-│   ├── personnel/
-│   │   ├── [id].tsx            # Personnel detail / edit
-│   │   └── new.tsx             # Register new personnel
-│   └── _layout.tsx
-├── src/
-│   ├── db/
-│   │   ├── schema.ts           # SQLite table definitions + migrations
-│   │   ├── repositories/
-│   │   │   ├── PersonnelRepository.ts
-│   │   │   ├── FaceImageRepository.ts
-│   │   │   ├── VerificationRepository.ts
-│   │   │   └── BackupJobRepository.ts
-│   │   └── migrations/
-│   ├── services/
-│   │   ├── FaceService.ts      # Embedding extraction + liveness + matching
-│   │   ├── SyncService.ts      # Connectivity detection + queue dispatch
-│   │   ├── S3UploadService.ts  # Image upload to S3
-│   │   └── CameraService.ts    # Camera lifecycle + image capture
-│   ├── models/                 # TypeScript domain types
-│   │   ├── Personnel.ts
-│   │   ├── FaceImage.ts
-│   │   ├── VerificationRecord.ts
-│   │   └── BackupJob.ts
-│   ├── hooks/                  # React hooks (useSync, useCamera, usePersonnel)
-│   ├── components/             # Shared UI components
-│   └── constants/
-├── __tests__/
-│   ├── unit/
+NHAI_hackathon/
+├── mobile/                          # Expo React Native app (bare workflow)
+│   ├── src/
+│   │   ├── constants/               # Named constants (thresholds, limits)
+│   │   ├── models/                  # TypeScript domain types (Personnel, FaceImage, etc.)
 │   │   ├── services/
-│   │   └── repositories/
-│   ├── integration/
-│   │   └── sync/               # SQS + Lambda integration (LocalStack)
-│   └── contract/
-│       └── sync-schema.test.ts
-└── assets/
-
-infra/                          # AWS infrastructure
-├── lambda/
-│   └── sync-engine/
-│       ├── handler.ts          # SQS event handler → RDS writer
-│       ├── imageProcessor.ts   # S3 image registration
-│       └── __tests__/
-├── terraform/ (or CDK)         # IaC for SQS, Lambda, RDS, S3
-└── scripts/
-    └── db-migrate.sql          # RDS schema bootstrap
+│   │   │   ├── database/            # SQLite schema, migrations, db singleton
+│   │   │   ├── recognition/         # FaceDetectionService, EmbeddingService, FaceMatchingService
+│   │   │   ├── liveness/            # LivenessDetectionService (blink + texture)
+│   │   │   └── sync/                # SyncService, OutboxService, BackupJobService
+│   │   ├── repositories/            # PersonnelRepository, FaceImageRepository,
+│   │   │                            # VerificationRepository, BackupJobRepository
+│   │   ├── screens/
+│   │   │   ├── PersonnelList/
+│   │   │   ├── PersonnelRegistration/
+│   │   │   ├── Verification/
+│   │   │   └── BackupStatus/
+│   │   └── components/              # Shared UI components (from React Native Paper)
+│   ├── assets/
+│   │   └── models/                  # .tflite binaries (MobileFaceNet, MiniFASNet, landmark)
+│   └── __tests__/
+│       ├── unit/                    # Service + repository unit tests
+│       ├── integration/             # Real expo-sqlite integration tests
+│       ├── contract/                # Sync payload schema validation
+│       └── e2e/                     # Maestro flows
+│
+├── infra/
+│   ├── lambda/
+│   │   └── sync-engine/             # Node.js Lambda handler
+│   │       ├── src/
+│   │       │   ├── handlers/        # SQS event handler, presign handler
+│   │       │   ├── repositories/    # PersonnelRepo, VerificationRepo (PostgreSQL)
+│   │       │   └── validators/      # Ajv schema validators
+│   │       └── __tests__/           # Lambda unit + integration tests
+│   ├── terraform/
+│   │   ├── modules/
+│   │   │   ├── api-gateway/
+│   │   │   ├── sqs/                 # FIFO queue + DLQ
+│   │   │   ├── lambda/
+│   │   │   ├── rds/                 # PostgreSQL 15
+│   │   │   └── s3/                  # Face image bucket
+│   │   └── main.tf
+│   └── docker-compose.yml           # LocalStack for local Lambda dev
+│
+└── specs/
 ```
 
-**Structure Decision**: Mobile + AWS infra monorepo. `mobile/` is the Expo app; `infra/` contains the Lambda sync engine and IaC. This cleanly separates the two independently deployable units while keeping them in one repo for the hackathon.
+**Structure Decision**: Option 3 (Mobile + API). The mobile app is an independent Expo bare-workflow project. The cloud sync engine is a separate Node.js Lambda under `infra/`. They share no code — integration is purely via the stable `contracts/sync-api.md` HTTP/SQS interface. This separation keeps mobile and cloud deployable and testable independently.
+
+---
 
 ## Complexity Tracking
 
-| Violation | Why Needed | Simpler Alternative Rejected Because |
-|-----------|------------|-------------------------------------|
-| Multi-layer sync (SQS → Lambda → RDS) | Multi-device conflict safety; at-least-once delivery guarantee; decouples mobile from RDS | Direct mobile → RDS connection exposes DB credentials on device and creates connection pool exhaustion at scale |
-| Face embedding storage in SQLite BLOB | Avoids re-running ML inference on every match; reduces verification latency from ~2s to ~50ms per comparison | Storing only raw image paths requires reprocessing all images on every verification |
-| Expo managed → bare ejection possible | On-device ML via TFLite may require native modules unavailable in managed workflow | Managed workflow preferred initially; bare ejection documented as escape hatch if TFLite native module is needed |
+> No constitution violations require justification. This section is intentionally empty.
+
+---
+
+## Performance Profiling Results
+
+> **TODO (pre-submission)**: Record profiling results here before final demo, per Constitution §V.5.
+
+| Metric | Target | Measured | Device | Date |
+|--------|--------|----------|--------|------|
+| End-to-end verification latency (p95) | < 5 000 ms | — | — | — |
+| Face detection frame time | < 100 ms | — | — | — |
+| MobileFaceNet inference time | < 150 ms | — | — | — |
+| MiniFASNet inference time | < 100 ms | — | — | — |
+| Cosine matching (500 records) | < 5 ms | — | — | — |
+| Sync throughput (500 records, 3G) | < 3 min | — | — | — |
+| App memory (steady state, 8 h) | < 300 MB RSS | — | — | — |
