@@ -13,6 +13,8 @@ import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.load
 import com.facebook.react.defaults.DefaultReactNativeHost
 
 import expo.modules.ApplicationLifecycleDispatcher
+
+import com.mobile.BuildConfig
 import expo.modules.ExpoReactHostFactory
 import expo.modules.ReactNativeHostWrapper
 
