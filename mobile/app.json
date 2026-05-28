@@ -11,13 +11,15 @@
     },
     "ios": {
       "supportsTablet": false,
-      "deploymentTarget": "14.0"
+      "deploymentTarget": "14.0",
+      "bundleIdentifier": "com.anonymous.nhaifieldops"
     },
     "android": {
       "minSdkVersion": 26,
       "adaptiveIcon": {
         "backgroundColor": "#ffffff"
-      }
+      },
+      "package": "com.anonymous.nhaifieldops"
     },
     "plugins": [
       "expo-sqlite",
