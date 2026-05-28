@@ -3,13 +3,23 @@
   "version": "1.0.0",
   "main": "index.js",
   "dependencies": {
+    "@react-native-community/netinfo": "12.0.1",
+    "@react-navigation/native": "^7.2.5",
+    "@react-navigation/stack": "^7.9.3",
     "expo": "~56.0.5",
     "expo-crypto": "~56.0.4",
     "expo-file-system": "~56.0.7",
     "expo-sqlite": "~56.0.4",
     "expo-status-bar": "~56.0.4",
     "react": "19.2.3",
-    "react-native": "0.85.3"
+    "react-native": "0.85.3",
+    "react-native-fast-tflite": "^3.0.1",
+    "react-native-gesture-handler": "~2.31.2",
+    "react-native-paper": "^5.15.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "4.25.2",
+    "react-native-vector-icons": "^10.3.0",
+    "react-native-vision-camera": "^5.0.11"
   },
   "publishConfig": {
     "executableFiles": [
@@ -17,7 +27,7 @@
     ]
   },
   "scripts": {
-    "start": "expo start --dev-client",
+    "start": "expo start -c",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web"
@@ -44,6 +54,7 @@
   "devDependencies": {
     "@testing-library/react-native": "^13.3.3",
     "@types/jest": "^30.0.0",
+    "@types/react": "~19.2.15",
     "@typescript-eslint/eslint-plugin": "^8.60.0",
     "@typescript-eslint/parser": "^8.60.0",
     "eslint": "^10.4.0",

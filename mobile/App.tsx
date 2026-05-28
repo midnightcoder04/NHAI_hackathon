@@ -1,15 +1,16 @@
 import { SQLiteProvider } from 'expo-sqlite';
 import { StatusBar } from 'expo-status-bar';
-import { Text, View } from 'react-native';
+import { PaperProvider } from 'react-native-paper';
 import { runMigrations } from './src/db/migrations';
+import AppNavigator from './src/navigation/AppNavigator';
 
 export default function App() {
   return (
     <SQLiteProvider databaseName="nhai.db" onInit={runMigrations}>
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        <Text>NHAI Field Ops</Text>
+      <PaperProvider>
         <StatusBar style="auto" />
-      </View>
+        <AppNavigator />
+      </PaperProvider>
     </SQLiteProvider>
   );
 }
