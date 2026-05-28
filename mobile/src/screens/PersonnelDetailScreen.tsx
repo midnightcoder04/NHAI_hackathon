@@ -46,7 +46,7 @@ export default function PersonnelDetailScreen() {
   const [saving, setSaving] = useState(false);
 
   const { hasPermission, requestPermission } = useCameraPermission();
-  const device = useCameraDevice('back');
+  const device = useCameraDevice('front');
   const cameraRef = useRef<CameraRef>(null);
   const photoOutput = usePhotoOutput();
 

@@ -24,6 +24,16 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 
 ---
 
+## Test-Driven Development Protocol (Constitution II — NON-NEGOTIABLE)
+
+Every implementation task here is governed by strict Red → Green → Refactor:
+
+1. The matching test task in **Phase 8** MUST be authored first and MUST fail for the right reason (assertion, not import/compile error) before the implementation task it references is started.
+2. Phases 1–3 were implemented before test tasks existed; tasks **T081–T087** backfill that coverage and MUST be green before any Phase 4+ implementation continues.
+3. Contract tests (T093) MUST run before integration/E2E (Constitution III). Every commit MUST leave the suite green; coverage gates (≥ 80 % line / ≥ 70 % branch) are enforced in CI (T103).
+
+---
+
 ## Phase 1: Setup (Shared Infrastructure)
 
 **Purpose**: Monorepo scaffolding, workspaces, tooling — must complete before any other work.
@@ -46,7 +56,7 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 
 **⚠️ CRITICAL**: These tasks block every user story phase below.
 
-- [x] T010 Create `mobile/src/constants/index.ts` with all named constants: `FACE_MATCH_THRESHOLD = 0.75`, `LIVENESS_BLINK_FRAMES = 3`, `SYNC_BATCH_MAX_PERSONNEL = 100`, `SYNC_BATCH_MAX_VERIFICATIONS = 500`, `SYNC_RETRY_MAX_ATTEMPTS = 3`, `SYNC_RETRY_BACKOFF_MS = 5000`, `IMAGE_STORAGE_DIR = 'face_images/'`
+- [x] T010 Create `mobile/src/constants/index.ts` with all named constants: `FACE_MATCH_THRESHOLD = 0.65` (cosine, MobileFaceNet INT8 per README), `FACE_LOW_CONFIDENCE_THRESHOLD = 0.5`, `FACE_MIN_QUALITY_SCORE = 0.4`, `LIVENESS_BLINK_FRAMES = 3`, `SYNC_BATCH_MAX_PERSONNEL = 100`, `SYNC_BATCH_MAX_VERIFICATIONS = 500`, `SYNC_RETRY_MAX_ATTEMPTS = 3`, `SYNC_RETRY_BACKOFF_MS = 5000`, `IMAGE_STORAGE_DIR = 'face_images/'`, and model-asset filename constants (`MODEL_FACE_DETECTOR`, `MODEL_FACE_EMBEDDING`, `MODEL_LIVENESS_LANDMARKS`, `MODEL_LIVENESS_ANTISPOOF`)
 - [x] T011 [P] Create `mobile/src/models/Personnel.ts` with `SyncStatus` union type and `Personnel` interface per data-model.md TypeScript types
 - [x] T012 [P] Create `mobile/src/models/FaceImage.ts` with `FaceImage` interface (including `embedding: Float32Array | null`) per data-model.md
 - [x] T013 [P] Create `mobile/src/models/VerificationRecord.ts` with `VerificationOutcome` union and `VerificationRecord` interface per data-model.md
@@ -74,10 +84,10 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 - [x] T022 [P] [US1] Implement `PersonnelRepository` in `mobile/src/db/repositories/PersonnelRepository.ts` with methods: `create(p: Omit<Personnel, 'id'>): Promise<Personnel>`, `update(id, fields): Promise<void>`, `delete(id): Promise<void>`, `findAll(): Promise<Personnel[]>`, `findById(id): Promise<Personnel | null>` using `useSQLiteContext()`
 - [x] T023 [P] [US1] Implement `FaceImageRepository` in `mobile/src/db/repositories/FaceImageRepository.ts` with methods: `create(fi: Omit<FaceImage, 'id'>): Promise<FaceImage>`, `findByPersonnelId(personnelId): Promise<FaceImage[]>`, `update(id, fields): Promise<void>`, `deleteByPersonnelId(personnelId): Promise<void>`
 - [x] T024 [US1] Implement `ImageStorageService` in `mobile/src/services/ImageStorageService.ts` using `expo-file-system` to save captured camera frames to `FileSystem.documentDirectory + IMAGE_STORAGE_DIR`, return the absolute `image_path`, and delete images by path; check available storage and throw a typed error if insufficient
-- [x] T025 [US1] Implement `EmbeddingModel` stub in `mobile/src/ml/EmbeddingModel.ts` using `react-native-fast-tflite` to load a MobileFaceNet `.tflite` asset from `mobile/assets/models/mobilefacenet.tflite` and expose `extractEmbedding(imagePath: string): Promise<Float32Array>` — return a zeroed 128-float array if model asset is absent (dev placeholder)
+- [x] T025 [US1] Implement `EmbeddingModel` **stub** in `mobile/src/ml/EmbeddingModel.ts` exposing `extractEmbedding(imagePath: string): Promise<Float32Array>` — returns a zeroed 128-float array (dev placeholder). **Superseded by T099**, which loads the real MobileFaceNet INT8 model (`mobile/assets/models/MobileFaceNet_new_latest_int8.tflite`) via `react-native-fast-tflite`.
 - [x] T026 [US1] Implement `PersonnelListScreen` in `mobile/src/screens/PersonnelListScreen.tsx` using React Native Paper `FlatList` showing each personnel record's `fullName`, `employeeId`, and `role`; include a FAB for adding new records; navigate to `PersonnelDetailScreen` on row press
 - [x] T027 [US1] Implement `PersonnelDetailScreen` in `mobile/src/screens/PersonnelDetailScreen.tsx` with React Native Paper `TextInput` fields for `fullName`, `employeeId`, `role`; support both create mode (no `personnelId` param) and edit mode (pre-populated from `PersonnelRepository.findById`)
-- [x] T028 [US1] Integrate `react-native-vision-camera` v4 photo capture into `PersonnelDetailScreen.tsx`: add a camera preview component, a "Capture Photo" button that takes a snapshot, passes the image path through `ImageStorageService.save` → `EmbeddingModel.extractEmbedding` → `FaceImageRepository.create`, and displays a thumbnail of the captured image
+- [x] T028 [US1] Integrate `react-native-vision-camera` v5 photo capture into `PersonnelDetailScreen.tsx`: add a camera preview component, a "Capture Photo" button that takes a snapshot, passes the image path through `ImageStorageService.save` → `EmbeddingModel.extractEmbedding` → `FaceImageRepository.create`, and displays a thumbnail of the captured image
 - [x] T029 [US1] Implement save action in `PersonnelDetailScreen.tsx`: validate that `fullName`, `employeeId`, and `role` are non-empty, call `PersonnelRepository.create` (or `update`), enqueue to `sync_outbox` via `SyncOutboxRepository.enqueue` (created in T047 — use a stub that no-ops until T047 is done), then navigate back to `PersonnelListScreen`
 - [x] T030 [US1] Implement delete action in `PersonnelDetailScreen.tsx`: show a React Native Paper `Dialog` confirmation, then call `PersonnelRepository.delete` (cascades to `face_image` via SQLite FK), delete files via `ImageStorageService.deleteByPersonnelId`, and navigate back
 - [x] T031 [US1] Create `mobile/src/navigation/AppNavigator.tsx` using React Navigation v6 stack navigator with initial route `PersonnelList`, route `PersonnelDetail`, and placeholder routes for `Verification` and `BackupStatus` (added in later phases)
@@ -94,8 +104,8 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 
 ### Implementation for User Story 2
 
-- [ ] T032 [P] [US2] Implement `FaceDetector` Vision Camera Frame Processor in `mobile/src/ml/FaceDetector.ts` using `react-native-fast-tflite` to run a face landmark `.tflite` model on each camera frame; expose `detectFace(frame): { boundingBox, landmarks, qualityScore } | null`
-- [ ] T033 [P] [US2] Implement `LivenessDetector` in `mobile/src/ml/LivenessDetector.ts` with two checks: (1) blink detection — track eye-aspect-ratio across `LIVENESS_BLINK_FRAMES` consecutive frames from `FaceDetector` landmarks; (2) texture classifier — run a binary `.tflite` model on the face ROI to distinguish live face from printed photo; expose `check(frames: Frame[]): 'live' | 'spoof' | 'inconclusive'`
+- [ ] T032 [P] [US2] Implement `FaceDetector` Vision Camera Frame Processor in `mobile/src/ml/FaceDetector.ts` using `react-native-fast-tflite` to run **BlazeFace f16** (`mobile/assets/models/blaze_face_short_range_float16.tflite`, `MODEL_FACE_DETECTOR`) on each camera frame; expose `detectFace(frame): { boundingBox, landmarks (6 pts), qualityScore } | null`
+- [ ] T033 [P] [US2] Implement `LivenessDetector` in `mobile/src/ml/LivenessDetector.ts` with two layers: (1) **active** — blink/head-turn via eye-aspect-ratio tracked across `LIVENESS_BLINK_FRAMES` consecutive frames using the MiniFASNet/landmarks f16 model (`face_landmarks_detector_float16.tflite`, `MODEL_LIVENESS_LANDMARKS`); (2) **passive** — run the Antispoof INT8 texture classifier (`antispoof_128x128_int8.tflite`, `MODEL_LIVENESS_ANTISPOOF`) on the 128×128 face ROI to detect printed-photo/screen-replay spoofs; expose `check(frames: Frame[]): 'live' | 'spoof' | 'inconclusive'`
 - [ ] T034 [US2] Implement `FaceMatcher` in `mobile/src/ml/FaceMatcher.ts` with method `matchBest(queryEmbedding: Float32Array, candidates: FaceImage[]): { personnelId: string; score: number } | null` using cosine similarity; return the best match if score ≥ `FACE_MATCH_THRESHOLD`, otherwise `null`
 - [ ] T035 [US2] Implement `VerificationRepository` in `mobile/src/db/repositories/VerificationRepository.ts` with `create(vr: Omit<VerificationRecord, 'id'>): Promise<VerificationRecord>`, `findAll(): Promise<VerificationRecord[]>`, `findByPersonnelId(id): Promise<VerificationRecord[]>`
 - [ ] T036 [US2] Implement `VerificationService` in `mobile/src/services/VerificationService.ts` orchestrating: (1) load all `FaceImage` embeddings from DB, (2) start `FaceDetector` frame stream, (3) run `LivenessDetector` — abort with `liveness_failed` on spoof, (4) extract embedding via `EmbeddingModel`, (5) run `FaceMatcher` — map result to outcome enum, (6) save `VerificationRecord` via `VerificationRepository`, (7) enqueue to `sync_outbox` stub
@@ -155,7 +165,7 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 
 **Goal**: Operator has full visibility into sync status and manual control (retry, cancel) over backup operations with push notifications on completion or failure.
 
-**Independent Test**: Simulate a failed backup (kill network mid-sync) → open BackupStatusScreen → see failure reason and record count → tap "Retry" → confirm backup succeeds → notification appears. Cancel an in-progress backup → confirm pending records remain on device.
+**Independent Test**: Simulate a failed backup (kill network mid-sync) → open BackupStatusScreen → see failure reason and record count → tap "Retry" → confirm backup succeeds → notification appears. Cancel an in-progress backup → confirm pending records remain on device. (US3 `SyncService` may be stubbed/mocked so US4 can be developed and tested in isolation.)
 
 ### Implementation for User Story 4
 
@@ -176,7 +186,7 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 
 **Purpose**: Security hardening, edge-case handling, and production readiness improvements that span multiple stories.
 
-- [ ] T073 [P] Add `expo-secure-store` AES-256 encryption for the `employee_id` field in `PersonnelRepository.ts`: encrypt before SQLite write, decrypt after read using `SecureStore.setItemAsync` / `getItemAsync` with a device-bound key
+- [ ] T073 [P] Implement AES-256 field-level encryption at rest over **all PII** (FR-022) via a device-bound key held in `expo-secure-store`: create `mobile/src/services/CryptoService.ts` (encrypt/decrypt using `expo-crypto`), then encrypt-before-write / decrypt-after-read for `full_name`, `employee_id`, and the `embedding` BLOB in `PersonnelRepository.ts` and `FaceImageRepository.ts`, and encrypt the saved face image files in `ImageStorageService.ts`. (SQLCipher full-DB encryption noted as future upgrade — `expo-sqlite` does not bundle it.)
 - [ ] T074 Handle device storage full edge case in `ImageStorageService.ts`: call `FileSystem.getFreeDiskStorageAsync()` before saving; if available bytes < 2× image size, throw a typed `StorageFullError` and surface a React Native Paper Snackbar in `PersonnelDetailScreen.tsx`
 - [ ] T075 Add camera permission handling in `PersonnelDetailScreen.tsx`: check `Camera.getCameraPermissionStatus()` on mount; if not granted, request permission; if permanently denied, show a "Go to Settings" button
 - [ ] T076 Handle RDS schema-rejected records in `SyncService.ts`: on `400 VALIDATION_ERROR` response, log the full `details` array to console, mark each affected `sync_outbox` entry as `failed` with the field-level message, and do not block healthy records in the same batch from being retried
@@ -184,6 +194,61 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 - [ ] T078 [P] Add React Native Paper theme configuration in `mobile/src/components/theme.ts`: define primary, secondary, and error colours; wrap `App.tsx` root with `PaperProvider theme={theme}`; apply `200 ms` activity indicator delay rule across all async operations (show loading state only after 200 ms to avoid flicker)
 - [ ] T079 [P] Add `infra/docker-compose.yml` with a LocalStack service (image `localstack/localstack`) exposing SQS, S3 on `localhost:4566`, and document local Lambda integration test setup in `quickstart.md`
 - [ ] T080 Run full golden-path validation against `quickstart.md`: `pnpm install` → `pnpm android` → register a personnel record with photo → verify (authorized result) → verify with unknown face (unauthorized) → enable network → confirm sync in RDS → open BackupStatusScreen → confirm last sync time updated
+
+---
+
+## Phase 8: Test Coverage & TDD Compliance (Constitution II/III)
+
+**Purpose**: Restore and enforce test-first discipline. Backfill tests for already-shipped Phases 1–3; author write-first failing tests for all remaining implementation tasks.
+
+### Backfill — Phases 1–3 (already implemented; MUST become green before Phase 4+ continues)
+
+- [ ] T081 [P] Create shared test helpers in `mobile/__tests__/helpers/`: real `expo-sqlite` test-DB factory (fresh in-memory DB per test, runs migrations) and fixture builders for `Personnel`, `FaceImage`, `VerificationRecord`
+- [ ] T082 [P] Backfill unit tests for `mobile/src/utils/uuid.ts` + `idempotency.ts` (RFC-4122 shape; deterministic SHA-256 keys) in `__tests__/unit/utils/`
+- [ ] T083 [P] Backfill integration tests for `PersonnelRepository` (create/update/delete/findAll/findById + FK cascade to face_image) against real SQLite in `__tests__/integration/`
+- [ ] T084 [P] Backfill integration tests for `FaceImageRepository` (embedding `Float32Array`↔BLOB round-trip, `deleteByPersonnelId`)
+- [ ] T085 [P] Backfill integration tests for `migrations.ts` + `schema.ts` (idempotent re-run; all 5 tables, indexes, FK + CHECK constraints present)
+- [ ] T086 [P] Backfill component tests (React Native Testing Library) for `PersonnelListScreen` (rows, empty state, FAB navigation) and `PersonnelDetailScreen` (create vs edit mode, required-field validation)
+- [ ] T087 [P] Backfill unit tests for `ImageStorageService` (save returns path, `deleteByPersonnelId`, throws `StorageFullError` when free space < 2× image size)
+
+### Write-FIRST — Phases 4–6 (each MUST be authored and failing before its referenced implementation task)
+
+- [ ] T088 [US2] Failing unit tests for `FaceMatcher` (cosine similarity correctness; accept ≥ `FACE_MATCH_THRESHOLD`; low-confidence band ≥ `FACE_LOW_CONFIDENCE_THRESHOLD`; `null` on no-match) — precedes T034
+- [ ] T089 [US2] Failing unit tests for `LivenessDetector` (blink across `LIVENESS_BLINK_FRAMES`; spoof/live/inconclusive from mocked model outputs) — precedes T033
+- [ ] T090 [US2] Failing unit tests for `VerificationService` outcome mapping — all five FR-009 outcomes incl. `quality_insufficient` gate — precedes T036
+- [ ] T091 [US2] Failing integration tests for `VerificationRepository` — precedes T035
+- [ ] T092 [US3] Failing unit tests for `SyncOutboxRepository` (enqueue/dequeue ordering, idempotency key, status transitions) — precedes T042
+- [ ] T093 [US3] Failing **contract tests** for `contracts/sync-api.md` (`POST /sync/batch`, `PUT /sync/images/presign` request/response + 409/400 error bodies) in `mobile/__tests__/contract/`; MUST run before integration/E2E (Constitution III) — precedes T048
+- [ ] T094 [P] [US3] Failing unit tests for Lambda processors (Personnel newest-wins upsert; Verification/FaceImage idempotent insert) in `infra/lambda/sync-engine/__tests__/` — precedes T054–T056
+- [ ] T095 [US3] Failing integration test for the outbox dispatch loop (mocked NetInfo + real SQLite outbox; retry/backoff; 409 duplicate handling) — precedes T049
+- [ ] T096 [US4] Failing unit tests for `BackupStatusService` (start/complete/fail/cancel; `getStatus` aggregation) — precedes T066
+- [ ] T097 [US4] Failing component tests for `BackupStatusScreen` (Retry visible only when `failed`; Cancel only when `in_progress`) — precedes T068
+
+**Checkpoint**: Coverage gates green (≥ 80 % line / ≥ 70 % branch); contract tests pass.
+
+---
+
+## Phase 9: Real Model Integration (replaces ML stubs) — closes SC-003 / SC-004
+
+**Goal**: Swap the dev stubs for the real four-stage TFLite pipeline so liveness (SC-003 ≥ 95 %) and matching (SC-004 ≥ 90 %) become measurable.
+
+- [x] T098 [P] [US1] Bundle the four production TFLite models into `mobile/assets/models/` (`blaze_face_short_range_float16.tflite`, `MobileFaceNet_new_latest_int8.tflite`, `face_landmarks_detector_float16.tflite`, `antispoof_128x128_int8.tflite`) and register `tflite` in `metro.config.js` `resolver.assetExts`. ✅ Done — models copied (~4.8 MB total) and Metro updated.
+- [ ] T099 [US2] Replace the `EmbeddingModel` stub (T025) with real **MobileFaceNet INT8** inference via `react-native-fast-tflite`: load `MODEL_FACE_EMBEDDING`, preprocess the aligned face ROI to model input size, run CPU/XNNPACK-first per README, output an L2-normalized 128-d `Float32Array`. Write-first unit test asserting a deterministic embedding for a fixed fixture image precedes this task.
+
+**Checkpoint**: Verification returns real embeddings; SC-003 / SC-004 validated by T100.
+
+---
+
+## Phase 10: Performance, CI, Accessibility & E2E Gates (Constitution IV/V + Quality Gates)
+
+- [ ] T100 [P] Performance benchmark harness `mobile/__tests__/perf/inference.bench.ts`: assert per-stage budget (BlazeFace ~20 ms, MobileFaceNet ~60 ms, MiniFASNet ~100 ms, Antispoof ~30 ms; ≈ 210 ms total) and end-to-end verification < 5 s (SC-002); also assert SC-003 ≥ 95 % spoof rejection and SC-004 ≥ 90 % match accuracy against a labelled fixture set; record results in `plan.md` Profiling Results
+- [ ] T101 [P] Sync throughput benchmark: 500 verification records sync within 3 min over stable connectivity (SC-005); fail on > 20 % regression
+- [ ] T102 Memory/CPU profiling pass on a mid-range device profile (Snapdragon 665 / 3 GB RAM): record peak memory, CPU, and per-stage timings into `plan.md` Profiling Results before demo (Constitution V)
+- [ ] T103 [P] CI pipeline `.github/workflows/ci.yml`: pnpm install → lint (zero violations) → typecheck → jest with coverage gate (≥ 80 % line / ≥ 70 % branch) → contract tests → perf benchmark step (fail on > 20 % regression). Enforces all Constitution Quality Gates.
+- [ ] T104 [P] Accessibility pass (WCAG 2.1 AA) across all four screens: `accessibilityLabel`/`accessibilityRole` on every interactive element, ≥ 4.5:1 text contrast in the Paper theme, ≥ 48 dp touch targets, logical screen-reader focus order, and outcome results conveyed by text+icon (not colour alone) — Constitution IV
+- [ ] T105 [P] Maestro E2E flows in `mobile/.maestro/`: (a) US1 register → list → edit → delete; (b) US2 verify authorized / unauthorized / liveness-failed; run headless in CI (supersedes the manual-only golden path in T080)
+
+**Checkpoint**: All Constitution quality gates green in CI; profiling recorded; E2E flows pass.
 
 ---
 
@@ -198,6 +263,9 @@ specs/001-offline-facial-recognition/   # Design docs (read-only at implementati
 - **US3 (Phase 5)**: Requires Phase 2 complete; uses repositories written by US1 and US2 (stubs the sync_outbox enqueue until T042 lands)
 - **US4 (Phase 6)**: Requires Phase 5 (`SyncService`) to be in place; independently testable via `BackupStatusService` alone
 - **Polish (Phase 7)**: Requires all desired stories complete
+- **Tests (Phase 8)**: Backfill T081–T087 MUST be green before Phase 4+ implementation continues; write-first tests T088–T097 each precede their referenced implementation task (TDD, Constitution II)
+- **Model Integration (Phase 9)**: T099 follows the US2 ML scaffolding (T032–T036); T098 already done
+- **Gates (Phase 10)**: Accuracy/performance benchmarks (T100–T101) require Phase 9 real models; CI (T103) runs continuously once Phase 8 lands
 
 ### User Story Dependencies
 
@@ -288,7 +356,10 @@ Group C (Terraform modules):
 | Phase 5: US3 Cloud Sync (P2) | T042–T064 | 23 |
 | Phase 6: US4 Backup Management (P2) | T065–T072 | 8 |
 | Phase 7: Polish | T073–T080 | 8 |
-| **Total** | | **80** |
+| Phase 8: Test Coverage & TDD | T081–T097 | 17 |
+| Phase 9: Real Model Integration | T098–T099 | 2 |
+| Phase 10: Perf / CI / A11y / E2E Gates | T100–T105 | 6 |
+| **Total** | | **105** |
 
 ---
 

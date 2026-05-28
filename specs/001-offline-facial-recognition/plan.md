@@ -10,10 +10,10 @@ A React Native (Expo bare workflow) mobile app that performs on-device facial re
 
 ## Technical Context
 
-**Language/Version**: TypeScript (React Native / Expo SDK 52+), Node.js 20 (Lambda), HCL (Terraform 1.7+)
+**Language/Version**: TypeScript (React Native 0.83 / Expo SDK 55, bare workflow), Node.js 20 (Lambda), HCL (Terraform 1.7+)
 
 **Primary Dependencies**:
-- Mobile: `react-native-vision-camera` v4 + `react-native-fast-tflite` (TFLite inference for face embeddings and liveness), `expo-sqlite` SDK 52+ async API with WAL mode (local persistence), `expo-secure-store` (AES-256 encryption for sensitive fields), AWS SDK v3 (Cognito + API Gateway), `@react-native-community/netinfo` (connectivity monitoring)
+- Mobile: `react-native-vision-camera` v5 (Nitro, frame processors) + `react-native-fast-tflite` for the four-stage on-device pipeline — BlazeFace f16 (`blaze_face_short_range_float16.tflite`, detection), MobileFaceNet INT8 (`MobileFaceNet_new_latest_int8.tflite`, 128-d embedding), MiniFASNet/landmarks f16 (`face_landmarks_detector_float16.tflite`, active liveness) and Antispoof INT8 (`antispoof_128x128_int8.tflite`, passive liveness); `expo-sqlite` (SDK 55 async API, WAL mode) for local persistence; `expo-secure-store` + `expo-crypto` (AES-256 field-level encryption of PII, FR-022); AWS SDK v3 (Cognito + API Gateway); `@react-native-community/netinfo` (connectivity monitoring)
 - Backend: Node.js `pg` (node-postgres), AWS SDK v3 (SQS, S3)
 
 **Storage**: SQLite on-device (`expo-sqlite`), Amazon S3 (face images), Amazon RDS PostgreSQL (cloud replica)
@@ -30,10 +30,13 @@ A React Native (Expo bare workflow) mobile app that performs on-device facial re
 - Face matching accuracy ≥ 90 % under typical field lighting (SC-004)
 - All pending records synced within 3 min of stable connectivity for ≤ 500 records (SC-005)
 - Cloud API endpoints < 300 ms p95 under expected load (Constitution V)
+- On-device inference budget ≈ 210 ms/verification (BlazeFace ~20 + MobileFaceNet ~60 + MiniFASNet ~100 + Antispoof ~30); end-to-end auth < 1 s target (README), well within the < 5 s SC-002 ceiling
 
-**Constraints**: Fully offline capable (FR-012/FR-013); encrypted local storage (AES-256); no long-lived API secrets on device; SigV4-signed requests via Cognito Identity Pool temporary credentials
+**Constraints**: Fully offline capable (FR-012/FR-013); AES-256 field-level encryption at rest over all PII — names, employee IDs, embeddings, and face image files (FR-022) via a device-bound key (`expo-secure-store`); no long-lived API secrets on device; SigV4-signed requests via Cognito Identity Pool temporary credentials
 
 **Scale/Scope**: Single-device operator; 50+ enrolled personnel records; 500 verification records per typical field session per sync batch
+
+**Profiling Results**: To be recorded here post-implementation per Constitution V (memory/CPU profile on a mid-range device — e.g., Snapdragon 665 / 3 GB RAM — and per-stage inference timings; see task T102). _[pending]_
 
 ## Constitution Check
 
@@ -44,8 +47,8 @@ A React Native (Expo bare workflow) mobile app that performs on-device facial re
 | I. Code Quality | PASS | Single-responsibility services planned; all thresholds as named constants; no god objects |
 | II. TDD (NON-NEGOTIABLE) | PASS | All tasks in tasks.md will follow Red → Green → Refactor; face matching logic is pure-function testable |
 | III. Testing Standards | PASS | Unit (business logic isolated), integration (real SQLite via expo-sqlite test helpers), contract (sync-api.md schema validated); ≥ 80 % line / ≥ 70 % branch enforced in CI |
-| IV. UX Consistency | PASS | Single component library (React Native Paper); domain glossary in spec.md drives all UI text; 200 ms feedback rule enforced via loading states |
-| V. Performance | PASS | SC-002 < 5 s covers on-device verification; Constitution < 300 ms p95 for Lambda API; benchmark step in CI |
+| IV. UX Consistency | PASS | Single component library (React Native Paper); domain glossary in spec.md drives all UI text; 200 ms feedback rule enforced via loading states; accessibility (WCAG 2.1 AA — labels, ≥4.5:1 contrast, ≥48dp targets) designed in per task T104 |
+| V. Performance | PASS | SC-002 < 5 s and ~210 ms inference budget covered by benchmark harness (T100–T101) gated in CI (T103); Constitution < 300 ms p95 for Lambda API; memory/CPU profiling (T102) recorded in this plan |
 
 **Post-Phase-1 re-check**: All gates remain PASS. No constitution violations detected.
 
@@ -55,7 +58,7 @@ A React Native (Expo bare workflow) mobile app that performs on-device facial re
 |-----------|-----------|-------------------------------------|
 | Bare Expo workflow (eject from managed) | `react-native-vision-camera` and `react-native-fast-tflite` require native module compilation | Managed workflow cannot link native TFLite code; expo-face-detector (managed-compatible) provides bounding boxes only — not embeddings |
 | Outbox pattern + SQS FIFO | Ensures no record loss if connectivity drops mid-sync; idempotent replay | Direct HTTP retry from mobile loses durability on app restart; spec requires partial-sync resilience (FR-015) |
-| Dual ML approach (face detection landmark model + separate embedding TFLite) | MLKit face detector does not expose embeddings; a separate FaceNet/MobileFaceNet model is required for offline 1:N matching | Single-model alternatives do not provide both landmark detection and 128-d embeddings in one Expo-compatible package |
+| Four-model TFLite pipeline (BlazeFace detection + MobileFaceNet INT8 embedding + MiniFASNet/landmarks + Antispoof liveness) | No single model provides detection, 128-d embeddings, AND dual-layer (active blink + passive texture) liveness; each stage is independently swappable and quantization-tuned (f16 where texture/stability matters, INT8 where NNAPI applies) | A single multi-task TFLite model is not available open-source; MLKit exposes only bounding boxes/landmarks — not embeddings or anti-spoof |
 
 ## Project Structure
 

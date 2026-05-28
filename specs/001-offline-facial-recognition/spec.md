@@ -82,7 +82,7 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 ### Edge Cases
 
 - What happens when device storage is full and a new personnel photo cannot be saved?
-- How does the system handle two personnel with very similar facial features?
+- How does the system handle two personnel with very similar facial features? → The matcher returns only the single highest cosine-similarity candidate; if the best score falls below the acceptance threshold (or the top two candidates are within a narrow margin), the outcome is "Low Confidence — Secondary Check Required" rather than an arbitrary match.
 - What happens when the ML model cannot make a confident match? → Display "Low Confidence — Secondary Check Required"; log outcome as inconclusive.
 - How are verification records handled if the cloud rejects them (e.g., schema mismatch)?
 - What happens if the operator attempts to delete a personnel record while a sync is in progress?
@@ -105,7 +105,7 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 - **FR-006**: System MUST access the device camera to capture a live image for verification.
 - **FR-007**: System MUST perform on-device liveness detection before attempting facial matching to prevent photo-based spoofing.
 - **FR-008**: System MUST match the captured live face against all stored personnel profiles and return the closest match or no-match result.
-- **FR-009**: System MUST display a clear authorization result (Authorized / Unauthorized / Liveness Failed / Low Confidence) after each verification attempt. When the ML model cannot make a confident match, the system MUST display "Low Confidence — Secondary Check Required" and log the outcome as inconclusive.
+- **FR-009**: System MUST display a clear authorization result after each verification attempt — exactly one of these five outcomes: **Authorized**, **Unauthorized — No Match Found**, **Liveness Check Failed**, **Low Confidence — Secondary Check Required**, or **Image Quality Insufficient — Reposition Camera**. When the ML model cannot make a confident match, the system MUST display "Low Confidence — Secondary Check Required" and log the outcome as inconclusive.
 - **FR-010**: System MUST store a verification record locally after each attempt, including: timestamp, outcome, matched personnel ID (if any), and confidence indicator.
 - **FR-011**: System MUST provide operator guidance (e.g., reposition prompt) when image quality is insufficient for reliable matching.
 
@@ -127,6 +127,10 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 - **FR-019**: System MUST allow operators to manually trigger a retry of failed backup operations.
 - **FR-020**: System MUST allow operators to cancel an in-progress backup.
 - **FR-021**: System MUST notify the operator upon backup completion or failure.
+
+**Security & Data Protection**
+
+- **FR-022**: System MUST encrypt all personnel personally identifiable information at rest — full name, employee ID, facial embeddings, and stored face image files — using AES-256 with a device-bound key, such that the data is unreadable if device storage is extracted.
 
 ### Key Entities
 
@@ -153,21 +157,22 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 ### Session 2026-05-27
 
 - Q: Which IaC tool should manage AWS infrastructure? → A: Terraform (HCL, remote state in S3 + DynamoDB lock)
-- Q: Which mobile platform and framework? → A: React Native (Expo) — Android + iOS, JS/TS, MLKit integration
+- Q: Which mobile platform and framework? → A: React Native (Expo bare) — Android + iOS, JS/TS, on-device TFLite inference via `react-native-fast-tflite`
+- Q: Which on-device ML models power detection, recognition, and liveness? → A: A three-stage open-source TFLite pipeline (see README): BlazeFace f16 (detection), MobileFaceNet INT8 (128-d embedding), and dual-layer liveness — MiniFASNet/landmarks f16 (active blink/head-turn) + Antispoof INT8 (passive texture). Total footprint ~5 MB.
 - Q: Which AWS services back the cloud sync endpoint? → A: API Gateway + Lambda + RDS PostgreSQL
 - Q: How does the mobile app authenticate to the cloud API? → A: AWS Cognito Identity Pool (temporary IAM credentials via SigV4, no long-lived secrets on device)
 - Q: How should the system handle an ambiguous/low-confidence facial match? → A: Display "Low Confidence — Secondary Check Required" and log outcome as inconclusive
 
 ## Assumptions
 
-- ML models for facial recognition and liveness detection are provided as pre-built, on-device binaries — model development is out of scope.
+- ML models for facial recognition and liveness detection are provided as pre-built, open-source on-device TFLite binaries (located in `models/` and bundled into `mobile/assets/models/`) — model development is out of scope. The pipeline is BlazeFace (detection) → MobileFaceNet INT8 (embedding) → MiniFASNet/landmarks + Antispoof (liveness), run via `react-native-fast-tflite`. See README.md for the full architecture and rationale.
 - The device has a functional rear or front camera accessible via standard OS permissions.
 - Operators are non-technical field staff; the UI must require no prior technical training.
 - A single device is used by one operator at a time; multi-device concurrent sync conflict resolution is out of scope for this version.
 - The cloud sync backend is built as part of this system: AWS API Gateway + Lambda + RDS PostgreSQL, provisioned via Terraform. The integration interface (API contracts) must remain stable for downstream personnel management system consumption.
 - User authentication (login/password for the app itself) is out of scope; physical device security is assumed to be the access control layer.
 - Cloud API access is secured via AWS Cognito Identity Pool. The app obtains temporary IAM credentials (SigV4-signed requests) at sync time; no long-lived API keys or secrets are stored on device. Cognito Identity Pool is provisioned via Terraform.
-- Local data encryption at rest is required but the specific encryption standard is deferred to implementation.
+- Local data encryption at rest is required (FR-022): AES-256 over all PII fields (full name, employee ID, embeddings) and face image files, keyed by a device-bound secret. SQLCipher full-database encryption is the longer-term target; the prototype achieves equivalent coverage via field-level encryption because the chosen `expo-sqlite` engine does not bundle SQLCipher.
 - The target deployment is a hackathon prototype intended for production integration; therefore, the integration interface must be clean and stable even if other areas remain prototype-grade.
 - All AWS infrastructure MUST be defined and provisioned using Terraform (IaC). Remote state is stored in S3 with DynamoDB state locking. No manual console provisioning is permitted for reproducible resources.
-- The mobile application is built with React Native (Expo), targeting Android and iOS from a single JS/TS codebase. On-device ML integration uses Google MLKit via Expo-compatible native modules.
+- The mobile application is built with React Native (Expo bare workflow), targeting Android and iOS from a single JS/TS codebase. On-device ML integration uses TFLite models via `react-native-fast-tflite` (native C++ inference); MLKit is not used because it does not expose face embeddings for offline 1:N matching.
