@@ -25,12 +25,12 @@ A React Native (Expo bare workflow) mobile app that performs on-device facial re
 **Project Type**: Mobile app (React Native/Expo bare) + Cloud API (AWS HTTP API Gateway + Lambda)
 
 **Performance Goals**:
-- Verification result displayed to operator < 5 s end-to-end (SC-002)
+- Verification result displayed to operator < 1 s end-to-end (SC-002)
 - Liveness detection rejects photo spoofing ≥ 95 % of attempts (SC-003)
 - Face matching accuracy ≥ 90 % under typical field lighting (SC-004)
 - All pending records synced within 3 min of stable connectivity for ≤ 500 records (SC-005)
 - Cloud API endpoints < 300 ms p95 under expected load (Constitution V)
-- On-device inference budget ≈ 210 ms/verification (BlazeFace ~20 + MobileFaceNet ~60 + MiniFASNet ~100 + Antispoof ~30); end-to-end auth < 1 s target (README), well within the < 5 s SC-002 ceiling
+- On-device inference budget ≈ 210 ms/verification (BlazeFace ~20 + MobileFaceNet ~60 + MiniFASNet ~100 + Antispoof ~30); end-to-end auth < 1 s (SC-002, README sub-second target)
 
 **Constraints**: Fully offline capable (FR-012/FR-013); AES-256 field-level encryption at rest over all PII — names, employee IDs, embeddings, and face image files (FR-022) via a device-bound key (`expo-secure-store`); no long-lived API secrets on device; SigV4-signed requests via Cognito Identity Pool temporary credentials
 
@@ -48,7 +48,7 @@ A React Native (Expo bare workflow) mobile app that performs on-device facial re
 | II. TDD (NON-NEGOTIABLE) | PASS | All tasks in tasks.md will follow Red → Green → Refactor; face matching logic is pure-function testable |
 | III. Testing Standards | PASS | Unit (business logic isolated), integration (real SQLite via expo-sqlite test helpers), contract (sync-api.md schema validated); ≥ 80 % line / ≥ 70 % branch enforced in CI |
 | IV. UX Consistency | PASS | Single component library (React Native Paper); domain glossary in spec.md drives all UI text; 200 ms feedback rule enforced via loading states; accessibility (WCAG 2.1 AA — labels, ≥4.5:1 contrast, ≥48dp targets) designed in per task T104 |
-| V. Performance | PASS | SC-002 < 5 s and ~210 ms inference budget covered by benchmark harness (T100–T101) gated in CI (T103); Constitution < 300 ms p95 for Lambda API; memory/CPU profiling (T102) recorded in this plan |
+| V. Performance | PASS | SC-002 < 1 s and ~210 ms inference budget covered by benchmark harness (T100–T101) gated in CI (T103); Constitution < 300 ms p95 for Lambda API; memory/CPU profiling (T102) recorded in this plan |
 
 **Post-Phase-1 re-check**: All gates remain PASS. No constitution violations detected.
 

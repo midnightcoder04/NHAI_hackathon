@@ -13,6 +13,8 @@ import {
   eyeAspectRatio,
   detectBlink,
   fuseLiveness,
+  passiveLiveness,
+  reduceCapture,
   check,
   extractEyeLandmarks,
   EAR_RIGHT_EYE_INDICES,
@@ -20,6 +22,7 @@ import {
   type Point,
   type EyeLandmarks,
   type LivenessDeps,
+  type CaptureFrameSample,
 } from '../../../src/ml/LivenessDetector';
 import { LIVENESS_BLINK_FRAMES } from '../../../src/constants';
 
@@ -132,6 +135,62 @@ describe('check (frame stream fusion)', () => {
   it('given_no_face_in_any_frame_then_inconclusive', () => {
     const frames = [frame(true, 0.9, false), frame(false, 0.9, false), frame(true, 0.9, false)];
     expect(check(frames, deps())).toBe('inconclusive');
+  });
+});
+
+describe('passiveLiveness (antispoof-only verdict — least-compute layer)', () => {
+  it('given_no_frames_then_inconclusive', () => {
+    expect(passiveLiveness([])).toBe('inconclusive');
+  });
+
+  it('given_high_mean_real_probability_then_live', () => {
+    expect(passiveLiveness([0.9, 0.8, 0.95])).toBe('live');
+  });
+
+  it('given_low_mean_real_probability_then_spoof', () => {
+    expect(passiveLiveness([0.1, 0.2, 0.15])).toBe('spoof');
+  });
+
+  it('uses_LIVENESS_ANTISPOOF_REAL_THRESHOLD_as_the_boundary', () => {
+    // threshold = 0.5: a mean just over → live, just under → spoof.
+    expect(passiveLiveness([0.6, 0.6])).toBe('live');
+    expect(passiveLiveness([0.4, 0.4])).toBe('spoof');
+  });
+});
+
+describe('reduceCapture (window of per-frame samples → dual-layer verdict)', () => {
+  const cap = (ear: number | null, realProb: number | null, facePresent = true): CaptureFrameSample => ({
+    facePresent,
+    ear,
+    realProb,
+  });
+  const absent: CaptureFrameSample = { facePresent: false, ear: null, realProb: null };
+  // open → closed → open EAR with real texture = a blinking, live face.
+  const liveBlink = [cap(0.5, 0.9), cap(0.05, 0.9), cap(0.5, 0.9)];
+
+  it('given_no_samples_then_inconclusive', () => {
+    expect(reduceCapture([])).toBe('inconclusive');
+  });
+
+  it('given_blink_and_real_texture_and_face_held_then_live', () => {
+    expect(reduceCapture(liveBlink)).toBe('live');
+  });
+
+  it('given_blink_but_low_texture_then_spoof', () => {
+    expect(reduceCapture([cap(0.5, 0.1), cap(0.05, 0.1), cap(0.5, 0.1)])).toBe('spoof');
+  });
+
+  it('given_real_texture_but_no_blink_then_inconclusive', () => {
+    expect(reduceCapture([cap(0.5, 0.9), cap(0.5, 0.9), cap(0.5, 0.9)])).toBe('inconclusive');
+  });
+
+  it('given_too_few_ear_samples_then_inconclusive', () => {
+    expect(reduceCapture([cap(0.5, 0.9), cap(null, 0.9), cap(null, 0.9)])).toBe('inconclusive');
+  });
+
+  it('given_face_not_held_for_enough_of_the_window_then_inconclusive_continuity_gate', () => {
+    // 3 present blink frames + 3 absent → presence 0.5 < 0.6 ⇒ possible swap/pull-away.
+    expect(reduceCapture([...liveBlink, absent, absent, absent])).toBe('inconclusive');
   });
 });
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, StyleSheet, View } from 'react-native';
 import { ActivityIndicator, Banner, Button, Snackbar, Text } from 'react-native-paper';
 import {
@@ -8,8 +8,11 @@ import {
 } from 'react-native-vision-camera';
 import { usePersonnelRepository } from '../db/repositories/PersonnelRepository';
 import { useVerificationService, type VerificationEvidence } from '../services/VerificationService';
-import { useFaceDetectionFrameOutput } from '../ml/frameProcessor';
-import { loadFaceDetectorModel } from '../ml/modelAssets';
+import { useVerificationFrameOutput, type VerificationFrameSample } from '../ml/frameProcessor';
+import { loadFaceDetectorModel, loadFaceLandmarksModel, loadAntispoofModel } from '../ml/modelAssets';
+import { LivenessDetector, type CaptureFrameSample } from '../ml/LivenessDetector';
+import { EmbeddingModel } from '../ml/EmbeddingModel';
+import { LIVENESS_CAPTURE_WINDOW_MS } from '../constants';
 import type { BoxedTfliteModel } from '../ml/tfliteRuntime';
 import type { DetectedFace } from '../services/VerificationService';
 import type { Personnel } from '../models/Personnel';
@@ -23,20 +26,16 @@ const DEVICE_ID = 'local-device';
 /**
  * Captures verification evidence from the live frame stream.
  *
- * NATIVE WIRING (T032/T033, completed at build time — not exercised by jest):
- * a `useFrameProcessor` worklet runs the boxed BlazeFace + landmarks + antispoof
- * models per frame, accumulating a short buffer; on "Start Verification" the
- * buffer is reduced via `FaceDetector.detectFace` + `LivenessDetector.check`, and
- * the aligned ROI is passed to `EmbeddingModel.extractEmbedding`. The result is
- * the `VerificationEvidence` consumed by VerificationService (T036).
+ * The `useVerificationFrameOutput` worklet (frameProcessor.ts) runs BlazeFace
+ * detection and — during the "Start Verification" window — the Antispoof passive
+ * liveness model on the SAME frame buffer. The screen collects those per-frame
+ * samples and reduces them via `LivenessDetector.passiveLiveness`; `EmbeddingModel`
+ * (zeroed stub until T099) supplies the query embedding. The result is the
+ * `VerificationEvidence` consumed by VerificationService (T036).
  *
- * Injected as a prop so the screen flow is testable without the worklet runtime.
+ * Overridable as a prop so the screen flow is testable without the worklet runtime.
  */
 export type CaptureEvidence = () => Promise<VerificationEvidence>;
-
-const captureEvidenceUnavailable: CaptureEvidence = async () => {
-  throw new Error('Frame-processor capture not available in this build');
-};
 
 export interface VerificationScreenProps {
   captureEvidence?: CaptureEvidence;
@@ -44,18 +43,26 @@ export interface VerificationScreenProps {
 
 type Phase = 'idle' | 'capturing';
 
-export default function VerificationScreen({
-  captureEvidence = captureEvidenceUnavailable,
-}: VerificationScreenProps) {
+export default function VerificationScreen({ captureEvidence }: VerificationScreenProps) {
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('front');
   const personnelRepo = usePersonnelRepository();
   const { verify } = useVerificationService();
 
-  // Load the boxed BlazeFace model once; the frame-output worklet runs detection
-  // per frame against it (no-ops until loaded). EmbeddingModel/liveness models
-  // attach the same way once the embedding path lands (Phase 9 / T099).
+  const [phase, setPhase] = useState<Phase>('idle');
+  const [result, setResult] = useState<VerificationRecord | null>(null);
+  const [matched, setMatched] = useState<Personnel | null>(null);
+  const [snackMsg, setSnackMsg] = useState('');
+
+  // Load the boxed models. BlazeFace is required (detection + the live overlay); the
+  // FaceMesh (active blink) and Antispoof (passive texture) models back the two liveness
+  // layers — load best-effort, but a missing model means that layer can't pass, so the
+  // verdict falls to inconclusive (fail-closed). Embedding (MobileFaceNet) is still a
+  // zeroed stub until T099; it must run in the same worklet pass when it lands so the
+  // matched identity stays bound to the same frame proven live.
   const [detectorModel, setDetectorModel] = useState<BoxedTfliteModel | null>(null);
+  const [landmarksModel, setLandmarksModel] = useState<BoxedTfliteModel | null>(null);
+  const [antispoofModel, setAntispoofModel] = useState<BoxedTfliteModel | null>(null);
   useEffect(() => {
     let cancelled = false;
     loadFaceDetectorModel()
@@ -63,31 +70,64 @@ export default function VerificationScreen({
         if (!cancelled) setDetectorModel(m);
       })
       .catch(() => setSnackMsg('Failed to load face detection model.'));
+    loadFaceLandmarksModel()
+      .then((m) => {
+        if (!cancelled) setLandmarksModel(m);
+      })
+      .catch(() => console.warn('[verify] landmarks model failed to load; blink disabled'));
+    loadAntispoofModel()
+      .then((m) => {
+        if (!cancelled) setAntispoofModel(m);
+      })
+      .catch(() => console.warn('[verify] antispoof model failed to load; passive layer disabled'));
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const onFace = useCallback((face: DetectedFace | null) => {
-    if (face) {
-      console.log(
-        `[verify] face quality=${face.qualityScore.toFixed(2)} ` +
-          `box=${Math.round(face.boundingBox.width)}x${Math.round(face.boundingBox.height)}`,
-      );
+  // Per-frame liveness evidence from the worklet, gathered during the capture window
+  // only. Each sample carries face presence + EAR (active) + antispoof real-prob
+  // (passive); `reduceCapture` fuses the window with a continuous-presence gate.
+  const samplesRef = useRef<CaptureFrameSample[]>([]);
+  const bestFaceRef = useRef<DetectedFace | null>(null);
+
+  const onSample = useCallback((sample: VerificationFrameSample) => {
+    const { face, ear, realProb } = sample;
+    if (face && (!bestFaceRef.current || face.qualityScore > bestFaceRef.current.qualityScore)) {
+      bestFaceRef.current = face;
     }
+    const buf = samplesRef.current;
+    buf.push({ facePresent: face != null, ear, realProb });
+    if (buf.length > 90) buf.shift();
   }, []);
 
-  const frameOutput = useFaceDetectionFrameOutput(detectorModel, onFace);
+  // Detection runs every frame (cheap, for the overlay); the liveness stack (FaceMesh
+  // blink + antispoof) runs only while 'capturing'. All layers are fused on the SAME
+  // frame buffer inside the worklet (see frameProcessor) — no swap window between checks.
+  const frameOutput = useVerificationFrameOutput(
+    { detector: detectorModel, landmarks: landmarksModel, antispoof: antispoofModel },
+    phase === 'capturing',
+    onSample,
+  );
 
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [result, setResult] = useState<VerificationRecord | null>(null);
-  const [matched, setMatched] = useState<Personnel | null>(null);
-  const [snackMsg, setSnackMsg] = useState('');
+  // Default capture: gather same-frame detection + dual-layer liveness evidence across
+  // the ~1 s window, then reduce to VerificationEvidence. Overridable via prop (tests).
+  const captureFromFrames = useCallback<CaptureEvidence>(async () => {
+    samplesRef.current = [];
+    bestFaceRef.current = null;
+    await new Promise((resolve) => setTimeout(resolve, LIVENESS_CAPTURE_WINDOW_MS));
+    const face = bestFaceRef.current;
+    const liveness = LivenessDetector.reduceCapture(samplesRef.current);
+    const queryEmbedding = await EmbeddingModel.extractEmbedding('');
+    return { face, liveness, queryEmbedding };
+  }, []);
+
+  const effectiveCapture = captureEvidence ?? captureFromFrames;
 
   const startVerification = useCallback(async () => {
     setPhase('capturing');
     try {
-      const evidence = await captureEvidence();
+      const evidence = await effectiveCapture();
       const record = await verify(evidence, {
         deviceId: DEVICE_ID,
         initiatedAt: new Date().toISOString(),
@@ -102,7 +142,7 @@ export default function VerificationScreen({
     } finally {
       setPhase('idle');
     }
-  }, [captureEvidence, verify, personnelRepo]);
+  }, [effectiveCapture, verify, personnelRepo]);
 
   const dismissResult = useCallback(() => {
     setResult(null);
@@ -146,7 +186,7 @@ export default function VerificationScreen({
 
       <View style={styles.guidanceOverlay} pointerEvents="none">
         <Text variant="titleMedium" style={styles.guidanceText}>
-          {phase === 'capturing' ? 'Please blink' : 'Position face in frame'}
+          {phase === 'capturing' ? 'Blink now' : 'Position face in frame'}
         </Text>
       </View>
 

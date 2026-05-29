@@ -19,6 +19,15 @@ export const LIVENESS_EAR_CLOSED_THRESHOLD = 0.2;
 // Passive layer: mean Antispoof "real" probability (0..1) must meet this or the
 // frames are classified as a spoof (printed photo / screen replay).
 export const LIVENESS_ANTISPOOF_REAL_THRESHOLD = 0.5;
+// On "Start Verification", how long the frame-processor runs the full liveness stack
+// (FaceMesh blink + Antispoof) on each frame to gather evidence bound to the same
+// instant as the match. Kept to ~1 s for the sub-second auth target (SC-002): a short
+// burst whose first frames each go through ALL models, enough to catch a blink.
+export const LIVENESS_CAPTURE_WINDOW_MS = 1000;
+// Fraction of capture-window frames that must contain a tracked face for the result to
+// count. A photo-swap or pull-away mid-window drops below this → inconclusive (this is
+// the continuous-presence gate that keeps blink + antispoof + match one presentation).
+export const LIVENESS_MIN_PRESENCE_RATIO = 0.6;
 
 export const SYNC_BATCH_MAX_PERSONNEL = 100;
 export const SYNC_BATCH_MAX_VERIFICATIONS = 500;

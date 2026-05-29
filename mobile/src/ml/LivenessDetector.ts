@@ -2,6 +2,7 @@ import {
   LIVENESS_BLINK_FRAMES,
   LIVENESS_EAR_CLOSED_THRESHOLD,
   LIVENESS_ANTISPOOF_REAL_THRESHOLD,
+  LIVENESS_MIN_PRESENCE_RATIO,
 } from '../constants';
 import type { LivenessResult } from '../services/VerificationService';
 
@@ -89,6 +90,74 @@ export function fuseLiveness(blinkDetected: boolean, realProbability: number): L
 const mean = (xs: number[]): number => (xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length);
 
 /**
+ * Passive-only liveness verdict from the Antispoof texture classifier alone — the
+ * least-compute liveness layer (a single ~30 ms INT8 model, no multi-frame blink /
+ * FaceMesh). `live` iff the mean real-probability across the captured frames clears
+ * LIVENESS_ANTISPOOF_REAL_THRESHOLD; `spoof` if it doesn't; `inconclusive` when there
+ * were no usable (face-bearing) frames.
+ *
+ * Because antispoof runs in the SAME frame-processor pass as detection (same pixel
+ * buffer), this verdict is bound to the exact frames identity-matching will use —
+ * closing the time-of-check/time-of-use gap that a separate "check liveness, then
+ * wait for a new frame to match" flow would open.
+ */
+export function passiveLiveness(realProbabilities: readonly number[]): LivenessResult {
+  if (realProbabilities.length === 0) return 'inconclusive';
+  return mean([...realProbabilities]) >= LIVENESS_ANTISPOOF_REAL_THRESHOLD ? 'live' : 'spoof';
+}
+
+/**
+ * One frame of the live capture window, as produced by the verification worklet:
+ * whether a face was tracked this frame, its eye-aspect-ratio (active blink layer,
+ * null if FaceMesh yielded nothing), and the antispoof real-probability (passive
+ * layer, null if not sampled this frame).
+ */
+export interface CaptureFrameSample {
+  facePresent: boolean;
+  ear: number | null;
+  realProb: number | null;
+}
+
+export interface ReduceCaptureOptions {
+  blinkFrames?: number;
+  minPresenceRatio?: number;
+}
+
+/**
+ * Reduce a whole capture window to a single dual-layer verdict, fusing the ACTIVE
+ * (blink/EAR) and PASSIVE (antispoof texture) layers over evidence that all came from
+ * the same continuous, face-tracked presentation:
+ *
+ *  1. **Continuity gate** — the face must be tracked across ≥ `minPresenceRatio` of the
+ *     window's frames. A photo-swap or pull-away mid-window drops below this → reject.
+ *     This is what stops a "blink with a real face, then show a photo to match" attack:
+ *     the gap (or the photo's failing antispoof) breaks the single-presentation chain.
+ *  2. **Active** — `detectBlink` over the EAR series (needs ≥ `blinkFrames` samples).
+ *  3. **Passive** — mean antispoof real-probability.
+ *  4. `fuseLiveness`: passive dominates (low texture ⇒ spoof regardless of blink); a real
+ *     texture WITH a confirmed blink ⇒ live; real texture but no blink ⇒ inconclusive.
+ */
+export function reduceCapture(
+  samples: readonly CaptureFrameSample[],
+  opts: ReduceCaptureOptions = {},
+): LivenessResult {
+  const blinkFrames = opts.blinkFrames ?? LIVENESS_BLINK_FRAMES;
+  const minPresence = opts.minPresenceRatio ?? LIVENESS_MIN_PRESENCE_RATIO;
+  if (samples.length === 0) return 'inconclusive';
+
+  const present = samples.filter((s) => s.facePresent).length;
+  if (present / samples.length < minPresence) return 'inconclusive';
+
+  const earSeries = samples.map((s) => s.ear).filter((e): e is number => e !== null);
+  if (earSeries.length < blinkFrames) return 'inconclusive';
+
+  const realProbs = samples.map((s) => s.realProb).filter((p): p is number => p !== null);
+  const blink = detectBlink(earSeries, blinkFrames);
+  const realProbability = realProbs.length === 0 ? 0 : mean(realProbs);
+  return fuseLiveness(blink, realProbability);
+}
+
+/**
  * Run both liveness layers over a captured frame stream and fuse the result.
  * Returns 'inconclusive' when there aren't enough frames (or detected faces) to
  * make a determination — never a false 'live'.
@@ -132,6 +201,8 @@ export const LivenessDetector = {
   eyeAspectRatio,
   detectBlink,
   fuseLiveness,
+  passiveLiveness,
+  reduceCapture,
   check,
   extractEyeLandmarks,
 };

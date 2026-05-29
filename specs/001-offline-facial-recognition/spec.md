@@ -144,7 +144,7 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 ### Measurable Outcomes
 
 - **SC-001**: Operators can register a new personnel profile (including photo capture) in under 2 minutes on first use.
-- **SC-002**: Verification result (authorized or denied) is displayed to the operator within 5 seconds of initiating a check.
+- **SC-002**: Verification result (authorized or denied) is displayed to the operator within 1 second of initiating a check (sub-second authentication target per README).
 - **SC-003**: Liveness detection correctly rejects photo-based spoofing in at least 95% of test attempts.
 - **SC-004**: Facial matching achieves at least 90% accuracy against enrolled personnel under typical field lighting conditions.
 - **SC-005**: All locally stored records are automatically uploaded within 3 minutes of stable internet connectivity being restored, for datasets up to 500 verification records.

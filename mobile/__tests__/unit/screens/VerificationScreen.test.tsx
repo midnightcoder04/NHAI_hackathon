@@ -31,11 +31,13 @@ jest.mock('../../../src/services/VerificationService', () => ({
 
 // frameProcessor pulls in the native VisionCamera/worklets runtime — stub the hook.
 jest.mock('../../../src/ml/frameProcessor', () => ({
-  useFaceDetectionFrameOutput: () => ({}),
+  useVerificationFrameOutput: () => ({}),
 }));
-// modelAssets require()s native .tflite assets — stub the loader.
+// modelAssets require()s native .tflite assets — stub the loaders.
 jest.mock('../../../src/ml/modelAssets', () => ({
   loadFaceDetectorModel: () => new Promise(() => {}), // never resolves in tests
+  loadFaceLandmarksModel: () => new Promise(() => {}),
+  loadAntispoofModel: () => new Promise(() => {}),
 }));
 
 const mockFindById = jest.fn();
