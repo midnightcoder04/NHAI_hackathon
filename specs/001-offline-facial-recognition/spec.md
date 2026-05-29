@@ -165,7 +165,7 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 
 ## Assumptions
 
-- ML models for facial recognition and liveness detection are provided as pre-built, open-source on-device TFLite binaries (located in `models/` and bundled into `mobile/assets/models/`) — model development is out of scope. The pipeline is BlazeFace (detection) → MobileFaceNet INT8 (embedding) → MiniFASNet/landmarks + Antispoof (liveness), run via `react-native-fast-tflite`. See README.md for the full architecture and rationale.
+- ML models for facial recognition and liveness detection are provided as pre-built, open-source on-device TFLite binaries (bundled into `mobile/assets/models/`) — model development is out of scope. The pipeline is BlazeFace (detection) → MobileFaceNet INT8 (embedding) → MiniFASNet/landmarks + Antispoof (liveness), run via `react-native-fast-tflite`. See README.md for the full architecture and rationale.
 - The device has a functional rear or front camera accessible via standard OS permissions.
 - Operators are non-technical field staff; the UI must require no prior technical training.
 - A single device is used by one operator at a time; multi-device concurrent sync conflict resolution is out of scope for this version.

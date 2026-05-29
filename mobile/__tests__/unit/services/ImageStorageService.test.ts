@@ -3,17 +3,18 @@
  * boundary with an in-memory fake (Constitution III: unit tests isolate external deps).
  */
 jest.mock('expo-file-system', () => {
-  const files = new Map(); // uri -> size (bytes)
-  const dirs = new Set(); // dir uri
+  const files = new Map<string, number>(); // uri -> size (bytes)
+  const dirs = new Set<string>(); // dir uri
   const state = { available: 1_000_000_000 };
 
-  const join = (a, b) => `${a.replace(/\/+$/, '')}/${b.replace(/^\/+/, '')}`.replace(/\/+$/, '');
+  const join = (a: string, b: string) =>
+    `${a.replace(/\/+$/, '')}/${b.replace(/^\/+/, '')}`.replace(/\/+$/, '');
 
   class Directory {
-    constructor(...parts) {
-      this.uri = parts
-        .map((p) => (typeof p === 'string' ? p : p.uri))
-        .reduce((acc, p) => (acc === undefined ? p.replace(/\/+$/, '') : join(acc, p)), undefined);
+    uri: string;
+    constructor(...parts: Array<string | { uri: string }>) {
+      const segments = parts.map((p) => (typeof p === 'string' ? p : p.uri));
+      this.uri = segments.reduce((acc, p) => (acc === '' ? p.replace(/\/+$/, '') : join(acc, p)), '');
     }
     get exists() {
       return dirs.has(this.uri);
@@ -29,11 +30,12 @@ jest.mock('expo-file-system', () => {
   }
 
   class File {
-    constructor(a, b) {
-      this.uri = a instanceof Directory ? join(a.uri, b) : a;
+    uri: string;
+    constructor(a: string | Directory, b?: string) {
+      this.uri = a instanceof Directory ? join(a.uri, b ?? '') : a;
     }
-    get name() {
-      return this.uri.split('/').pop();
+    get name(): string {
+      return this.uri.split('/').pop() ?? '';
     }
     get exists() {
       return files.has(this.uri);
@@ -41,7 +43,7 @@ jest.mock('expo-file-system', () => {
     get size() {
       return files.get(this.uri) ?? 0;
     }
-    async copy(dest) {
+    async copy(dest: { uri: string }) {
       files.set(dest.uri, this.size);
     }
     delete() {
@@ -61,11 +63,11 @@ jest.mock('expo-file-system', () => {
     Directory,
     Paths,
     __fs: {
-      addFile: (uri, size) => files.set(uri, size),
-      addDir: (uri) => dirs.add(uri),
-      hasFile: (uri) => files.has(uri),
-      hasDir: (uri) => dirs.has(uri),
-      setAvailable: (n) => {
+      addFile: (uri: string, size: number) => files.set(uri, size),
+      addDir: (uri: string) => dirs.add(uri),
+      hasFile: (uri: string) => files.has(uri),
+      hasDir: (uri: string) => dirs.has(uri),
+      setAvailable: (n: number) => {
         state.available = n;
       },
       reset: () => {
@@ -80,7 +82,15 @@ jest.mock('expo-file-system', () => {
 import * as FileSystem from 'expo-file-system';
 import { ImageStorageService, StorageFullError } from '../../../src/services/ImageStorageService';
 
-const fs = (FileSystem as unknown as { __fs: any }).__fs;
+interface FsControl {
+  addFile: (uri: string, size: number) => void;
+  addDir: (uri: string) => void;
+  hasFile: (uri: string) => boolean;
+  hasDir: (uri: string) => boolean;
+  setAvailable: (n: number) => void;
+  reset: () => void;
+}
+const fs = (FileSystem as unknown as { __fs: FsControl }).__fs;
 const STORAGE_DIR = 'file:///doc/face_images';
 
 beforeEach(() => fs.reset());

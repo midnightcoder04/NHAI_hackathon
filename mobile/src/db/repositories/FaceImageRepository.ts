@@ -49,6 +49,15 @@ export function useFaceImageRepository() {
     return rows.map(rowToFaceImage);
   }
 
+  // Full enrolled gallery across all personnel — used by VerificationService to
+  // build the candidate set for face matching.
+  async function findAll(): Promise<FaceImage[]> {
+    const rows = await db.getAllAsync<Record<string, unknown>>(
+      'SELECT * FROM face_image ORDER BY created_at DESC',
+    );
+    return rows.map(rowToFaceImage);
+  }
+
   async function update(
     id: string,
     fields: Partial<Pick<FaceImage, 's3Key' | 'syncStatus'>>,
@@ -68,5 +77,5 @@ export function useFaceImageRepository() {
     await db.runAsync('DELETE FROM face_image WHERE personnel_id = ?', [personnelId]);
   }
 
-  return { create, findByPersonnelId, update, deleteByPersonnelId };
+  return { create, findByPersonnelId, findAll, update, deleteByPersonnelId };
 }

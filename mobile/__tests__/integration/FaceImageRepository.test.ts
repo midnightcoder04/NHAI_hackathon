@@ -58,6 +58,17 @@ describe('FaceImageRepository (integration, real node:sqlite)', () => {
     expect((await repo.findByPersonnelId(personnelId)).length).toBe(0);
   });
 
+  it('given_images_for_multiple_personnel_when_findAll_then_returns_full_gallery', async () => {
+    const repo = useFaceImageRepository();
+    const other = await usePersonnelRepository().create(buildPersonnelInput());
+    await repo.create(buildFaceImageInput(personnelId));
+    await repo.create(buildFaceImageInput(other.id));
+
+    const all = await repo.findAll();
+    expect(all.length).toBe(2);
+    expect(all.map((f) => f.personnelId).sort()).toEqual([personnelId, other.id].sort());
+  });
+
   it('given_orphan_personnelId_when_create_then_rejects_foreign_key_violation', async () => {
     const repo = useFaceImageRepository();
     await expect(
