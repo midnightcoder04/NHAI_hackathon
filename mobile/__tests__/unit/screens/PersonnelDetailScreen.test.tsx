@@ -85,8 +85,17 @@ describe('PersonnelDetailScreen', () => {
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
-  it('given_no_camera_permission_when_rendered_then_shows_permission_placeholder', () => {
+  it('given_no_inline_camera_when_rendered_then_form_inputs_are_present', () => {
+    // The live camera is never mounted inline behind the form — the inputs must be
+    // present and unobstructed on first render (regression: camera overlapped fields).
     renderScreen();
-    expect(screen.getByText('Camera permission required for photo capture.')).toBeTruthy();
+    expect(screen.getByText('Capture Photo')).toBeTruthy();
+    expect(screen.queryByText('Camera permission required for photo capture.')).toBeNull();
+  });
+
+  it('given_no_camera_permission_when_camera_opened_then_shows_permission_placeholder', async () => {
+    renderScreen();
+    fireEvent.press(screen.getByText('Capture Photo'));
+    expect(await screen.findByText('Camera permission required for photo capture.')).toBeTruthy();
   });
 });

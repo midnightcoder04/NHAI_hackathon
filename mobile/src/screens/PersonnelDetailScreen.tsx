@@ -1,5 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Image, ScrollView, StyleSheet, View } from 'react-native';
+import {
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  View,
+} from 'react-native';
 import {
   Button,
   Dialog,
@@ -44,6 +52,10 @@ export default function PersonnelDetailScreen() {
   const [snackMsg, setSnackMsg] = useState('');
   const [deleteDialogVisible, setDeleteDialogVisible] = useState(false);
   const [saving, setSaving] = useState(false);
+  // The live camera is only mounted while this modal is open — never inline behind
+  // the form — so its native preview surface can't overlap or steal taps from the
+  // text inputs (Android SurfaceView z-orders above the RN view tree).
+  const [cameraVisible, setCameraVisible] = useState(false);
 
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('front');
@@ -61,10 +73,10 @@ export default function PersonnelDetailScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personnelId]);
 
-  useEffect(() => {
+  function openCamera() {
     if (!hasPermission) requestPermission();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    setCameraVisible(true);
+  }
 
   async function capturePhoto() {
     try {
@@ -75,7 +87,9 @@ export default function PersonnelDetailScreen() {
       const embedding = await EmbeddingModel.extractEmbedding(savedPath);
       setCapturedImagePath(savedPath);
       setCapturedEmbedding(embedding);
+      setCameraVisible(false);
     } catch (err) {
+      setCameraVisible(false);
       if (err instanceof StorageFullError) {
         setSnackMsg('Not enough storage to save photo.');
       } else {
@@ -138,77 +152,98 @@ export default function PersonnelDetailScreen() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <TextInput
-        label="Full Name"
-        value={fullName}
-        onChangeText={setFullName}
-        style={styles.input}
-        mode="outlined"
-      />
-      <TextInput
-        label="Employee ID"
-        value={employeeId}
-        onChangeText={setEmployeeId}
-        style={styles.input}
-        mode="outlined"
-      />
-      <TextInput
-        label="Role"
-        value={role}
-        onChangeText={setRole}
-        style={styles.input}
-        mode="outlined"
-      />
-
-      {hasPermission && device ? (
-        <View style={styles.cameraContainer}>
-          <Camera
-            ref={cameraRef}
-            style={styles.camera}
-            device={device}
-            isActive
-            outputs={[photoOutput]}
-          />
-          <Button mode="contained" onPress={capturePhoto} style={styles.captureBtn}>
-            Capture Photo
-          </Button>
-        </View>
-      ) : (
-        <View style={styles.cameraPlaceholder}>
-          <Text>Camera permission required for photo capture.</Text>
-          <Button onPress={requestPermission}>Grant Permission</Button>
-        </View>
-      )}
-
-      {capturedImagePath ? (
-        <Image
-          source={{ uri: `file://${capturedImagePath}` }}
-          style={styles.thumbnail}
-          resizeMode="cover"
-        />
-      ) : null}
-
-      <Button
-        mode="contained"
-        onPress={handleSave}
-        loading={saving}
-        disabled={saving}
-        style={styles.saveBtn}
-      >
-        {isEditMode ? 'Save Changes' : 'Register Personnel'}
-      </Button>
-
-      {isEditMode ? (
-        <Button
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        <TextInput
+          label="Full Name"
+          value={fullName}
+          onChangeText={setFullName}
+          style={styles.input}
           mode="outlined"
-          textColor="red"
-          onPress={() => setDeleteDialogVisible(true)}
-          style={styles.deleteBtn}
-        >
-          Delete
+        />
+        <TextInput
+          label="Employee ID"
+          value={employeeId}
+          onChangeText={setEmployeeId}
+          style={styles.input}
+          mode="outlined"
+        />
+        <TextInput
+          label="Role"
+          value={role}
+          onChangeText={setRole}
+          style={styles.input}
+          mode="outlined"
+        />
+
+        {capturedImagePath ? (
+          <Image
+            source={{ uri: `file://${capturedImagePath}` }}
+            style={styles.thumbnail}
+            resizeMode="cover"
+          />
+        ) : null}
+
+        <Button mode="outlined" icon="camera" onPress={openCamera} style={styles.photoBtn}>
+          {capturedImagePath ? 'Retake Photo' : 'Capture Photo'}
         </Button>
-      ) : null}
+
+        <Button
+          mode="contained"
+          onPress={handleSave}
+          loading={saving}
+          disabled={saving}
+          style={styles.saveBtn}
+        >
+          {isEditMode ? 'Save Changes' : 'Register Personnel'}
+        </Button>
+
+        {isEditMode ? (
+          <Button
+            mode="outlined"
+            textColor="red"
+            onPress={() => setDeleteDialogVisible(true)}
+            style={styles.deleteBtn}
+          >
+            Delete
+          </Button>
+        ) : null}
+      </ScrollView>
+
+      <Modal
+        visible={cameraVisible}
+        animationType="slide"
+        onRequestClose={() => setCameraVisible(false)}
+      >
+        {hasPermission && device ? (
+          <View style={styles.cameraModal}>
+            <Camera
+              ref={cameraRef}
+              style={StyleSheet.absoluteFill}
+              device={device}
+              isActive={cameraVisible}
+              outputs={[photoOutput]}
+            />
+            <View style={styles.cameraControls}>
+              <Button mode="contained-tonal" onPress={() => setCameraVisible(false)}>
+                Cancel
+              </Button>
+              <Button mode="contained" onPress={capturePhoto}>
+                Capture
+              </Button>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.cameraPlaceholder}>
+            <Text>Camera permission required for photo capture.</Text>
+            <Button onPress={requestPermission}>Grant Permission</Button>
+            <Button onPress={() => setCameraVisible(false)}>Close</Button>
+          </View>
+        )}
+      </Modal>
 
       <Portal>
         <Dialog visible={deleteDialogVisible} onDismiss={() => setDeleteDialogVisible(false)}>
@@ -230,23 +265,31 @@ export default function PersonnelDetailScreen() {
       >
         {snackMsg}
       </Snackbar>
-    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   container: { padding: 16, paddingBottom: 40 },
   input: { marginBottom: 12 },
-  cameraContainer: { marginBottom: 12 },
-  camera: { height: 240, borderRadius: 8 },
-  captureBtn: { marginTop: 8 },
+  photoBtn: { marginBottom: 12 },
+  cameraModal: { flex: 1, backgroundColor: 'black' },
+  cameraControls: {
+    position: 'absolute',
+    bottom: 32,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingHorizontal: 24,
+  },
   cameraPlaceholder: {
-    height: 120,
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
+    gap: 8,
     backgroundColor: '#f0f0f0',
-    borderRadius: 8,
   },
   thumbnail: { width: '100%', height: 160, borderRadius: 8, marginBottom: 12 },
   saveBtn: { marginBottom: 8 },
