@@ -124,6 +124,9 @@ importers:
       '@typescript-eslint/parser':
         specifier: ^8.60.0
         version: 8.60.0(eslint@9.39.4)(typescript@5.9.3)
+      babel-preset-expo:
+        specifier: ~55.0.22
+        version: 55.0.22(@babel/core@7.29.7)(@babel/runtime@7.29.7)(expo@55.0.26)(react-refresh@0.14.2)
       eslint:
         specifier: ^9.18.0
         version: 9.39.4
@@ -5827,7 +5830,7 @@ snapshots:
       debug: 4.4.3
       getenv: 2.0.0
       glob: 13.0.6
-      hermes-parser: 0.32.0
+      hermes-parser: 0.32.1
       jsc-safe-url: 0.2.4
       lightningcss: 1.32.0
       picomatch: 4.0.4
