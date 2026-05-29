@@ -61,10 +61,8 @@ export function useFaceDetectionFrameOutput(
   const S = BLAZEFACE_INPUT_SIZE;
 
   // JS-thread sink: decode raw tensors → DetectedFace (decode/NMS unit-tested).
-  const handleOutputs = (out0: ArrayBuffer, out1: ArrayBuffer, w: number, h: number) => {
-    const a = new Float32Array(out0);
-    const b = new Float32Array(out1);
-    const [scores, regressors] = a.length <= b.length ? [a, b] : [b, a];
+  const handleOutputs = (out0: number[], out1: number[], w: number, h: number) => {
+    const [scores, regressors] = out0.length <= out1.length ? [out0, out1] : [out1, out0];
     const dims = { width: w, height: h };
     const candidates = decodeBlazeFace(scores, regressors, dims);
     if (__inferenceLogCounter++ % 30 === 0) {
@@ -104,7 +102,15 @@ export function useFaceDetectionFrameOutput(
           }
         }
         const outputs = boxed.unbox().runSync([input.buffer]);
-        runOnJS(handleOutputs)(outputs[0], outputs[1], w, h);
+        // Copy native output buffers to plain arrays IN the worklet — native-backed
+        // ArrayBuffers from runSync don't survive the worklet→JS runOnJS handoff
+        // (they arrive empty), so the JS-thread decode would see 0 anchors.
+        runOnJS(handleOutputs)(
+          Array.from(new Float32Array(outputs[0])),
+          Array.from(new Float32Array(outputs[1])),
+          w,
+          h,
+        );
       } catch (e) {
         runOnJS(handleError)(String(e));
       } finally {
