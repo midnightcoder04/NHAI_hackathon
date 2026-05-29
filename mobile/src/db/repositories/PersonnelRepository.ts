@@ -1,6 +1,7 @@
 import { useSQLiteContext } from 'expo-sqlite';
 import type { SQLiteBindValue } from 'expo-sqlite';
 import type { Personnel } from '../../models/Personnel';
+import { generateUUID } from '../../utils/uuid';
 
 function rowToPersonnel(row: Record<string, unknown>): Personnel {
   return {
@@ -19,7 +20,6 @@ export function usePersonnelRepository() {
   const db = useSQLiteContext();
 
   async function create(p: Omit<Personnel, 'id'>): Promise<Personnel> {
-    const { generateUUID } = await import('../../utils/uuid');
     const id = generateUUID();
     await db.runAsync(
       `INSERT INTO personnel (id, employee_id, full_name, role, registered_at, updated_at, sync_status, sync_error)

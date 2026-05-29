@@ -119,7 +119,7 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 - **FR-014**: System MUST automatically detect when internet connectivity becomes available and initiate a background sync of unsynced records.
 - **FR-015**: System MUST resume interrupted sync operations from the last successfully transferred record (no duplicate uploads).
 - **FR-016**: System MUST track the sync status of each record (pending, in-progress, synced, failed).
-- **FR-017**: System MUST expose an API/interface endpoint to receive synced data, suitable for integration with existing personnel management systems. The cloud backend is implemented as AWS API Gateway + Lambda functions backed by RDS PostgreSQL, all provisioned via Terraform.
+- **FR-017**: System MUST expose an API/interface endpoint to receive synced data, suitable for integration with existing personnel management systems. The cloud backend is implemented as AWS API Gateway → Lambda → SQS FIFO → Lambda → RDS PostgreSQL: the HTTP-facing Lambda validates each batch and enqueues it to an SQS FIFO queue for durable, idempotent processing by the same Lambda's SQS-triggered consumer (see `contracts/sync-api.md`). All resources are provisioned via Terraform.
 
 **Backup Management**
 
@@ -158,7 +158,7 @@ The operator can monitor the status of cloud backups, manually trigger a retry o
 
 - Q: Which IaC tool should manage AWS infrastructure? → A: Terraform (HCL, remote state in S3 + DynamoDB lock)
 - Q: Which mobile platform and framework? → A: React Native (Expo bare) — Android + iOS, JS/TS, on-device TFLite inference via `react-native-fast-tflite`
-- Q: Which on-device ML models power detection, recognition, and liveness? → A: A three-stage open-source TFLite pipeline (see README): BlazeFace f16 (detection), MobileFaceNet INT8 (128-d embedding), and dual-layer liveness — MiniFASNet/landmarks f16 (active blink/head-turn) + Antispoof INT8 (passive texture). Total footprint ~5 MB.
+- Q: Which on-device ML models power detection, recognition, and liveness? → A: A four-model open-source TFLite pipeline across three logical stages (see README): BlazeFace f16 (detection) → MobileFaceNet INT8 (128-d embedding) → dual-layer liveness — MiniFASNet/landmarks f16 (active blink/head-turn) + Antispoof INT8 (passive texture). Total footprint ~5 MB.
 - Q: Which AWS services back the cloud sync endpoint? → A: API Gateway + Lambda + RDS PostgreSQL
 - Q: How does the mobile app authenticate to the cloud API? → A: AWS Cognito Identity Pool (temporary IAM credentials via SigV4, no long-lived secrets on device)
 - Q: How should the system handle an ambiguous/low-confidence facial match? → A: Display "Low Confidence — Secondary Check Required" and log outcome as inconclusive

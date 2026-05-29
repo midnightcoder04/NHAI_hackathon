@@ -1,6 +1,7 @@
 import { useSQLiteContext } from 'expo-sqlite';
 import type { SQLiteBindValue } from 'expo-sqlite';
 import type { FaceImage } from '../../models/FaceImage';
+import { generateUUID } from '../../utils/uuid';
 
 function embeddingToBlob(embedding: Float32Array | null): Uint8Array | null {
   if (!embedding) return null;
@@ -30,7 +31,6 @@ export function useFaceImageRepository() {
   const db = useSQLiteContext();
 
   async function create(fi: Omit<FaceImage, 'id'>): Promise<FaceImage> {
-    const { generateUUID } = await import('../../utils/uuid');
     const id = generateUUID();
     const embeddingBlob = embeddingToBlob(fi.embedding);
     await db.runAsync(

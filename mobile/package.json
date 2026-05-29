@@ -31,11 +31,16 @@
     "start": "expo start -c",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test": "jest",
+    "test:cov": "jest --coverage"
   },
   "private": true,
   "jest": {
     "preset": "jest-expo",
+    "setupFilesAfterEnv": [
+      "<rootDir>/jest.setup.js"
+    ],
     "coverageThreshold": {
       "global": {
         "lines": 80,
@@ -58,13 +63,15 @@
     "@types/react": "~19.2.15",
     "@typescript-eslint/eslint-plugin": "^8.60.0",
     "@typescript-eslint/parser": "^8.60.0",
-    "eslint": "^10.4.0",
+    "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-native": "^5.0.0",
     "jest": "^29.7.0",
     "jest-expo": "~55.0.0",
-    "prettier": "^3.8.3"
+    "prettier": "^3.8.3",
+    "react-test-renderer": "19.2.0",
+    "typescript": "^5.9.0"
   }
 }

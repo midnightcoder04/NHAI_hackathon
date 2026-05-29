@@ -1,0 +1,92 @@
+import React from 'react';
+import { render, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { PaperProvider } from 'react-native-paper';
+
+const mockNavigate = jest.fn();
+const mockGoBack = jest.fn();
+let mockRouteParams: Record<string, unknown> = {};
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({ navigate: mockNavigate, goBack: mockGoBack }),
+  useRoute: () => ({ params: mockRouteParams }),
+}));
+
+// Camera mocked so the real <Camera> never mounts: no permission + no device →
+// the screen renders its permission-placeholder branch.
+jest.mock('react-native-vision-camera', () => ({
+  Camera: () => null,
+  useCameraDevice: () => undefined,
+  useCameraPermission: () => ({ hasPermission: false, requestPermission: jest.fn() }),
+  usePhotoOutput: () => ({ capturePhotoToFile: jest.fn() }),
+}));
+
+const mockCreate = jest.fn();
+const mockUpdate = jest.fn();
+const mockFindById = jest.fn();
+jest.mock('../../../src/db/repositories/PersonnelRepository', () => ({
+  usePersonnelRepository: () => ({
+    create: mockCreate,
+    update: mockUpdate,
+    delete: jest.fn(),
+    findById: mockFindById,
+  }),
+}));
+jest.mock('../../../src/db/repositories/FaceImageRepository', () => ({
+  useFaceImageRepository: () => ({ create: jest.fn() }),
+}));
+jest.mock('../../../src/ml/EmbeddingModel', () => ({
+  EmbeddingModel: { extractEmbedding: jest.fn().mockResolvedValue(new Float32Array(128)) },
+}));
+
+import PersonnelDetailScreen from '../../../src/screens/PersonnelDetailScreen';
+
+const renderScreen = () =>
+  render(
+    <PaperProvider>
+      <PersonnelDetailScreen />
+    </PaperProvider>,
+  );
+
+describe('PersonnelDetailScreen', () => {
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockGoBack.mockClear();
+    mockCreate.mockReset();
+    mockUpdate.mockReset();
+    mockFindById.mockReset();
+    mockRouteParams = {};
+  });
+
+  it('given_no_personnelId_when_rendered_then_in_create_mode', () => {
+    renderScreen();
+    expect(screen.getByText('Register Personnel')).toBeTruthy();
+    expect(screen.queryByText('Save Changes')).toBeNull();
+  });
+
+  it('given_personnelId_when_rendered_then_loads_record_in_edit_mode', async () => {
+    mockRouteParams = { personnelId: 'p1' };
+    mockFindById.mockResolvedValue({
+      id: 'p1',
+      fullName: 'Asha Rao',
+      employeeId: 'E1',
+      role: 'Inspector',
+      registeredAt: '',
+      updatedAt: '',
+      syncStatus: 'pending',
+    });
+    renderScreen();
+    expect(await screen.findByText('Save Changes')).toBeTruthy();
+    await waitFor(() => expect(screen.getByDisplayValue('Asha Rao')).toBeTruthy());
+  });
+
+  it('given_empty_required_fields_when_save_then_shows_validation_and_does_not_create', async () => {
+    renderScreen();
+    fireEvent.press(screen.getByText('Register Personnel'));
+    expect(await screen.findByText('All fields are required.')).toBeTruthy();
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it('given_no_camera_permission_when_rendered_then_shows_permission_placeholder', () => {
+    renderScreen();
+    expect(screen.getByText('Camera permission required for photo capture.')).toBeTruthy();
+  });
+});

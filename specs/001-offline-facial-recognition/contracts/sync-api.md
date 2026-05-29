@@ -20,7 +20,7 @@ The mobile app communicates with AWS via three channels:
 
 ## 1. POST /sync/batch
 
-**Auth**: AWS Cognito JWT Bearer token (or API Key for hackathon prototype)
+**Auth** (applies to both `POST /sync/batch` and `PUT /sync/images/presign`): **AWS IAM authorization (SigV4)**. The device obtains short-lived AWS credentials from the **Cognito Identity Pool** (guest / unauthenticated identity — there is no in-app login, per the spec assumptions) and signs each request with SigV4. No JWT, API key, or other long-lived secret is stored on the device. Both routes sit behind the API Gateway `AWS_IAM` authorizer; the Identity Pool's IAM role is scoped to only `execute-api:Invoke` on these two routes and `s3:PutObject` to the `images/` prefix. (Production hardening — Play Integrity / App Attest or developer-authenticated identities — is a documented future upgrade.)
 
 ### Request
 
