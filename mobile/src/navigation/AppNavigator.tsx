@@ -5,6 +5,7 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import PersonnelListScreen from '../screens/PersonnelListScreen';
 import PersonnelDetailScreen from '../screens/PersonnelDetailScreen';
+import VerificationScreen from '../screens/VerificationScreen';
 
 export type RootStackParamList = {
   PersonnelList: undefined;
@@ -38,7 +39,7 @@ export default function AppNavigator() {
           />
           <Stack.Screen
             name="Verification"
-            component={PlaceholderScreen}
+            component={VerificationScreen}
             options={{ title: 'Verify Personnel' }}
           />
           <Stack.Screen

@@ -6,8 +6,19 @@ export const FACE_MATCH_THRESHOLD = 0.65;
 export const FACE_LOW_CONFIDENCE_THRESHOLD = 0.5;
 // Minimum face quality (0..1) from the detector to run liveness + matching.
 export const FACE_MIN_QUALITY_SCORE = 0.4;
+// BlazeFace detection confidence floor — boxes below this are discarded.
+export const FACE_DETECTION_SCORE_THRESHOLD = 0.5;
+// Face bounding-box area as a fraction of the frame at which the size component of
+// the quality score saturates (a well-framed face fills roughly this much).
+export const FACE_QUALITY_TARGET_AREA_RATIO = 0.15;
 
 export const LIVENESS_BLINK_FRAMES = 3;
+// Active layer: eye-aspect-ratio below this is a closed eye; an open→closed→open
+// dip across LIVENESS_BLINK_FRAMES is counted as a blink (standard EAR ~0.2).
+export const LIVENESS_EAR_CLOSED_THRESHOLD = 0.2;
+// Passive layer: mean Antispoof "real" probability (0..1) must meet this or the
+// frames are classified as a spoof (printed photo / screen replay).
+export const LIVENESS_ANTISPOOF_REAL_THRESHOLD = 0.5;
 
 export const SYNC_BATCH_MAX_PERSONNEL = 100;
 export const SYNC_BATCH_MAX_VERIFICATIONS = 500;

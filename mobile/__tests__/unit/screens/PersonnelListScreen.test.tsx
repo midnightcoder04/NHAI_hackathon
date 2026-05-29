@@ -3,8 +3,9 @@ import { render, fireEvent, screen } from '@testing-library/react-native';
 import { PaperProvider } from 'react-native-paper';
 
 const mockNavigate = jest.fn();
+const mockSetOptions = jest.fn();
 jest.mock('@react-navigation/native', () => ({
-  useNavigation: () => ({ navigate: mockNavigate, goBack: jest.fn() }),
+  useNavigation: () => ({ navigate: mockNavigate, goBack: jest.fn(), setOptions: mockSetOptions }),
   useFocusEffect: (cb: () => void) => {
     const ReactLib = require('react');
     ReactLib.useEffect(() => {
@@ -30,7 +31,21 @@ const renderScreen = () =>
 describe('PersonnelListScreen', () => {
   beforeEach(() => {
     mockNavigate.mockClear();
+    mockSetOptions.mockClear();
     mockFindAll.mockReset();
+  });
+
+  it('given_header_verify_button_when_pressed_then_navigates_to_verification', async () => {
+    mockFindAll.mockResolvedValue([]);
+    renderScreen();
+    await screen.findByText('No personnel registered yet.');
+
+    // The Verify action is installed on the navigation header via setOptions.
+    const headerRight = mockSetOptions.mock.calls.at(-1)?.[0]?.headerRight;
+    expect(headerRight).toBeDefined();
+    render(<PaperProvider>{headerRight()}</PaperProvider>);
+    fireEvent.press(screen.getByLabelText('Verify personnel'));
+    expect(mockNavigate).toHaveBeenCalledWith('Verification');
   });
 
   it('given_no_personnel_when_rendered_then_shows_empty_state', async () => {

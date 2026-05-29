@@ -1,6 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useState } from 'react';
 import { FlatList, StyleSheet, View } from 'react-native';
-import { FAB, List, Text } from 'react-native-paper';
+import { Appbar, FAB, List, Text } from 'react-native-paper';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { StackNavigationProp } from '@react-navigation/stack';
 import { usePersonnelRepository } from '../db/repositories/PersonnelRepository';
@@ -13,6 +13,18 @@ export default function PersonnelListScreen() {
   const navigation = useNavigation<NavProp>();
   const repo = usePersonnelRepository();
   const [personnel, setPersonnel] = useState<Personnel[]>([]);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <Appbar.Action
+          icon="face-recognition"
+          accessibilityLabel="Verify personnel"
+          onPress={() => navigation.navigate('Verification')}
+        />
+      ),
+    });
+  }, [navigation]);
 
   useFocusEffect(
     useCallback(() => {
