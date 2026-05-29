@@ -1,27 +1,29 @@
 /* istanbul ignore file -- device-only VisionCamera 5 frame-output worklet binding;
-   runs on the camera frame thread, not under jest. Pure pieces it calls
+   runs on the camera frame thread, not under jest. Pure pieces it relies on
    (FaceDetector decode, preprocessing, LivenessDetector) are tested separately. */
 import { useFrameOutput, type CameraFrameOutput, type Frame } from 'react-native-vision-camera';
 import { runOnJS } from 'react-native-worklets';
 import type { BoxedTfliteModel } from './tfliteRuntime';
-import { runFaceDetection } from './FaceDetector';
+import { decodeBlazeFace, parseDetection } from './FaceDetector';
+import { BLAZEFACE_INPUT_SIZE } from '../constants';
 import type { DetectedFace } from '../services/VerificationService';
+
+// Throttle the per-frame "inference ran" diagnostic so it doesn't flood logcat.
+let __inferenceLogCounter = 0;
 
 /**
  * VisionCamera 5 frame-output binding.
  *
- * v5 core is Nitro, but the `onFrame` callback is a **worklet** running on the
- * CameraFrameOutput's own thread (requires react-native-worklets +
- * react-native-vision-camera-worklets, wired via the babel plugin). Boxed TFLite
- * models (NitroModules.box, see tfliteRuntime/modelAssets) are `unbox()`-ed inside
- * the worklet so inference runs on the frame thread without blocking JS/UI.
+ * v5 core is Nitro, but `onFrame` is a **worklet** running on the CameraFrameOutput's
+ * own thread (react-native-worklets + react-native-vision-camera-worklets, wired via
+ * the babel plugin). The boxed BlazeFace model (NitroModules.box, see modelAssets) is
+ * `unbox()`-ed inside the worklet so inference runs on the frame thread without
+ * blocking JS/UI; raw output tensors are handed to JS via `runOnJS` for decoding
+ * (the 896-anchor decode/NMS stays on the JS thread — see FaceDetector, unit-tested).
  *
- * Pixel path: request `pixelFormat: 'rgb'`; `frame.getPixelBuffer()` returns the
- * full-resolution RGB bytes. The model needs a square `INPUT_SIZE²` crop — that
- * resize is the one remaining device dependency (add `vision-camera-resize-plugin`
- * or a worklet resize), after which `preprocessBlazeFace(...)` →
- * `runFaceDetection(model.unbox(), input, dims)` (all already unit-tested) yields
- * the `DetectedFace`. Liveness mirrors this with the landmarks + antispoof models.
+ * vision-camera-resize-plugin only supports the v4 worklets-core pipeline, so the
+ * frame→model-input resize+normalise is inlined here (mirrors
+ * `resizeRgbNearestNeighbor` + `preprocessBlazeFace`, both unit-tested).
  */
 
 export interface FrameDims {
@@ -30,9 +32,8 @@ export interface FrameDims {
 }
 
 /**
- * Smoke-test frame output (T032 milestone): logs each frame's dimensions on the
- * worklet thread and forwards them to JS. Attach to `<Camera outputs={[output]} />`.
- * Proves the frame-output worklet pipeline is live end-to-end on device.
+ * Smoke-test frame output (T032 milestone, VERIFIED on device): logs each frame's
+ * dimensions on the worklet thread. Attach to `<Camera outputs={[output]} />`.
  */
 export function useFrameDimsSmokeTest(onDims?: (dims: FrameDims) => void): CameraFrameOutput {
   return useFrameOutput({
@@ -48,35 +49,64 @@ export function useFrameDimsSmokeTest(onDims?: (dims: FrameDims) => void): Camer
 }
 
 /**
- * Face-detection frame output (next step after the resize dependency lands).
- * `model` is the boxed BlazeFace model; `onFace` receives the best `DetectedFace`
- * (or null) per processed frame on the JS thread.
- *
- * NOTE: the `preprocessBlazeFace(resize(rgb))` step is the device piece still
- * pending a resize utility; the decode/run path it feeds (`runFaceDetection`) is
- * already unit-tested in FaceDetector.test.ts.
+ * Face-detection frame output: runs BlazeFace on each frame on the worklet thread
+ * and delivers the best `DetectedFace` (or null) per frame to `onFace` on the JS
+ * thread. No-ops until `model` is loaded.
  */
 export function useFaceDetectionFrameOutput(
-  model: BoxedTfliteModel,
+  model: BoxedTfliteModel | null,
   onFace: (face: DetectedFace | null) => void,
 ): CameraFrameOutput {
-  const boxed = model.boxed;
+  const boxed = model?.boxed ?? null;
+  const S = BLAZEFACE_INPUT_SIZE;
+
+  // JS-thread sink: decode raw tensors → DetectedFace (decode/NMS unit-tested).
+  const handleOutputs = (out0: ArrayBuffer, out1: ArrayBuffer, w: number, h: number) => {
+    const a = new Float32Array(out0);
+    const b = new Float32Array(out1);
+    const [scores, regressors] = a.length <= b.length ? [a, b] : [b, a];
+    const dims = { width: w, height: h };
+    const candidates = decodeBlazeFace(scores, regressors, dims);
+    if (__inferenceLogCounter++ % 30 === 0) {
+      console.log(
+        `[frameProcessor] inference ok: ${scores.length} anchors, ${candidates.length} candidate(s)`,
+      );
+    }
+    onFace(parseDetection(candidates, dims));
+  };
+  const handleError = (msg: string) => {
+    console.warn(`[frameProcessor] detection error: ${msg}`);
+  };
+
   return useFrameOutput({
     pixelFormat: 'rgb',
     onFrame: (frame: Frame) => {
       'worklet';
+      if (!boxed) {
+        frame.dispose();
+        return;
+      }
+      const w = frame.width;
+      const h = frame.height;
       try {
-        const dims: FrameDims = { width: frame.width, height: frame.height };
-        const rgb = frame.getPixelBuffer();
-        // TODO(device): resize `rgb` (dims) → BLAZEFACE_INPUT_SIZE² RGB, then:
-        //   const input = preprocessBlazeFace(resized).buffer;
-        //   const face = runFaceDetection(boxed.unbox(), input, dims);
-        //   runOnJS(onFace)(face);
-        void boxed;
-        void rgb;
-        void dims;
-        void onFace;
-        void runFaceDetection;
+        const rgb = new Uint8Array(frame.getPixelBuffer());
+        // inline nearest-neighbour resize → [-1,1] normalise into the model input
+        const input = new Float32Array(S * S * 3);
+        for (let y = 0; y < S; y++) {
+          const sy = Math.min(h - 1, Math.floor((y * h) / S));
+          for (let x = 0; x < S; x++) {
+            const sx = Math.min(w - 1, Math.floor((x * w) / S));
+            const si = (sy * w + sx) * 3;
+            const di = (y * S + x) * 3;
+            input[di] = rgb[si] / 127.5 - 1;
+            input[di + 1] = rgb[si + 1] / 127.5 - 1;
+            input[di + 2] = rgb[si + 2] / 127.5 - 1;
+          }
+        }
+        const outputs = boxed.unbox().runSync([input.buffer]);
+        runOnJS(handleOutputs)(outputs[0], outputs[1], w, h);
+      } catch (e) {
+        runOnJS(handleError)(String(e));
       } finally {
         frame.dispose();
       }

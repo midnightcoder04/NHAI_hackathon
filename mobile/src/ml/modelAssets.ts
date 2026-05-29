@@ -15,11 +15,14 @@ import antispoof from '../../assets/models/antispoof_128x128_int8.tflite';
  *  - Antispoof INT8  → passive liveness (T033)
  *  - MobileFaceNet INT8 → 128-d embedding (T099)  — CPU/XNNPACK fastest
  */
+// CPU/XNNPACK default (empty delegate list): reliable everywhere incl. emulators,
+// which lack working TFLite GPU support. Per the model README these run CPU-first;
+// callers can opt into a GPU delegate on real devices where it's a net win.
 export const loadFaceDetectorModel = (): Promise<BoxedTfliteModel> =>
-  loadBoxedModel(blazeFaceDetector, ['android-gpu', 'core-ml']);
+  loadBoxedModel(blazeFaceDetector);
 
 export const loadFaceLandmarksModel = (): Promise<BoxedTfliteModel> =>
-  loadBoxedModel(faceLandmarks, ['android-gpu', 'core-ml']);
+  loadBoxedModel(faceLandmarks);
 
 export const loadAntispoofModel = (): Promise<BoxedTfliteModel> => loadBoxedModel(antispoof);
 

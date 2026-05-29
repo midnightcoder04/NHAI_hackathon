@@ -10,6 +10,7 @@ import {
   dequantizeAndNormalize,
   softmax2,
   antispoofRealProbability,
+  resizeRgbNearestNeighbor,
 } from '../../../src/ml/preprocessing';
 import { ANTISPOOF_MEAN, ANTISPOOF_STD } from '../../../src/constants';
 
@@ -59,6 +60,23 @@ describe('dequantizeAndNormalize', () => {
     const norm = Math.sqrt([...v].reduce((s, x) => s + x * x, 0));
     expect(norm).toBeCloseTo(1, 5);
     expect(v[0]).toBeCloseTo(1); // only the first component is non-zero
+  });
+});
+
+describe('resizeRgbNearestNeighbor', () => {
+  it('downscales_2x2_to_1x1_by_nearest_sample', () => {
+    // 2x2 RGB: TL red, TR green, BL blue, BR white
+    const src = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+    const out = resizeRgbNearestNeighbor(src, 2, 2, 1, 1);
+    expect(out).toBeInstanceOf(Uint8Array);
+    expect([...out]).toEqual([255, 0, 0]); // samples the top-left pixel
+  });
+
+  it('produces_dstW*dstH*3_bytes_and_preserves_a_solid_colour', () => {
+    const src = new Uint8Array(4 * 4 * 3).fill(120);
+    const out = resizeRgbNearestNeighbor(src, 4, 4, 2, 2);
+    expect(out).toHaveLength(2 * 2 * 3);
+    expect([...out].every((v) => v === 120)).toBe(true);
   });
 });
 

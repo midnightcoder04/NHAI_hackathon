@@ -31,7 +31,11 @@ jest.mock('../../../src/services/VerificationService', () => ({
 
 // frameProcessor pulls in the native VisionCamera/worklets runtime — stub the hook.
 jest.mock('../../../src/ml/frameProcessor', () => ({
-  useFrameDimsSmokeTest: () => ({}),
+  useFaceDetectionFrameOutput: () => ({}),
+}));
+// modelAssets require()s native .tflite assets — stub the loader.
+jest.mock('../../../src/ml/modelAssets', () => ({
+  loadFaceDetectorModel: () => new Promise(() => {}), // never resolves in tests
 }));
 
 const mockFindById = jest.fn();

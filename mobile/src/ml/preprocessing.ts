@@ -15,6 +15,35 @@ export function preprocessBlazeFace(rgb: Uint8Array | number[]): Float32Array {
   return out;
 }
 
+/**
+ * Nearest-neighbour resize of an interleaved RGB buffer (`[r,g,b,…]`) from
+ * `srcW×srcH` to `dstW×dstH`. Cheap, dependency-free downscaling of a camera
+ * frame to a model's square input. (vision-camera-resize-plugin only supports the
+ * v4 worklets-core pipeline, not VisionCamera 5 — so the frame worklet inlines an
+ * equivalent of this; this exported copy is the canonical, unit-tested algorithm.)
+ */
+export function resizeRgbNearestNeighbor(
+  src: Uint8Array | number[],
+  srcW: number,
+  srcH: number,
+  dstW: number,
+  dstH: number,
+): Uint8Array {
+  const out = new Uint8Array(dstW * dstH * 3);
+  for (let y = 0; y < dstH; y++) {
+    const sy = Math.min(srcH - 1, Math.floor((y * srcH) / dstH));
+    for (let x = 0; x < dstW; x++) {
+      const sx = Math.min(srcW - 1, Math.floor((x * srcW) / dstW));
+      const si = (sy * srcW + sx) * 3;
+      const di = (y * dstW + x) * 3;
+      out[di] = src[si];
+      out[di + 1] = src[si + 1];
+      out[di + 2] = src[si + 2];
+    }
+  }
+  return out;
+}
+
 /** FaceMesh f16 — float32 RGB normalised to [0, 1] (`px/255`). */
 export function preprocessFaceMesh(rgb: Uint8Array | number[]): Float32Array {
   const out = new Float32Array(rgb.length);

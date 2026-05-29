@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Linking, StyleSheet, View } from 'react-native';
 import { ActivityIndicator, Banner, Button, Snackbar, Text } from 'react-native-paper';
 import {
@@ -8,7 +8,10 @@ import {
 } from 'react-native-vision-camera';
 import { usePersonnelRepository } from '../db/repositories/PersonnelRepository';
 import { useVerificationService, type VerificationEvidence } from '../services/VerificationService';
-import { useFrameDimsSmokeTest } from '../ml/frameProcessor';
+import { useFaceDetectionFrameOutput } from '../ml/frameProcessor';
+import { loadFaceDetectorModel } from '../ml/modelAssets';
+import type { BoxedTfliteModel } from '../ml/tfliteRuntime';
+import type { DetectedFace } from '../services/VerificationService';
 import type { Personnel } from '../models/Personnel';
 import type { VerificationRecord } from '../models/VerificationRecord';
 import VerificationResultOverlay from '../components/VerificationResultOverlay';
@@ -48,9 +51,33 @@ export default function VerificationScreen({
   const device = useCameraDevice('front');
   const personnelRepo = usePersonnelRepository();
   const { verify } = useVerificationService();
-  // T032 frame-output worklet: streams frames off the camera thread (currently a
-  // dims smoke test; the boxed-model detection path attaches here next).
-  const frameOutput = useFrameDimsSmokeTest();
+
+  // Load the boxed BlazeFace model once; the frame-output worklet runs detection
+  // per frame against it (no-ops until loaded). EmbeddingModel/liveness models
+  // attach the same way once the embedding path lands (Phase 9 / T099).
+  const [detectorModel, setDetectorModel] = useState<BoxedTfliteModel | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadFaceDetectorModel()
+      .then((m) => {
+        if (!cancelled) setDetectorModel(m);
+      })
+      .catch(() => setSnackMsg('Failed to load face detection model.'));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onFace = useCallback((face: DetectedFace | null) => {
+    if (face) {
+      console.log(
+        `[verify] face quality=${face.qualityScore.toFixed(2)} ` +
+          `box=${Math.round(face.boundingBox.width)}x${Math.round(face.boundingBox.height)}`,
+      );
+    }
+  }, []);
+
+  const frameOutput = useFaceDetectionFrameOutput(detectorModel, onFace);
 
   const [phase, setPhase] = useState<Phase>('idle');
   const [result, setResult] = useState<VerificationRecord | null>(null);
