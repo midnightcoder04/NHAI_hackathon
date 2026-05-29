@@ -61,3 +61,6 @@ Thumbs.db
 
 # Test coverage
 coverage/
+
+# Claude Code runtime artifacts
+.claude/scheduled_tasks.lock
