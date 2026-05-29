@@ -23,3 +23,20 @@ jest.mock('expo-sqlite', () => ({
   SQLiteProvider: ({ children }) => children,
   openDatabaseAsync: jest.fn(),
 }));
+
+// Native ML runtime (Nitro): VisionCamera v5 + fast-tflite v3 are Nitro HybridObjects
+// with no JS implementation under jest. Stub the model loader + NitroModules.box so the
+// tfliteRuntime loader logic is unit-testable without a device build.
+jest.mock('react-native-fast-tflite', () => ({
+  loadTensorflowModel: jest.fn(async () => ({
+    inputs: [{ name: 'input', dataType: 'float32', shape: [1, 128, 128, 3] }],
+    outputs: [{ name: 'output', dataType: 'float32', shape: [1, 128] }],
+    delegates: [],
+    runSync: jest.fn(() => [new ArrayBuffer(8)]),
+    run: jest.fn(async () => [new ArrayBuffer(8)]),
+  })),
+}));
+
+jest.mock('react-native-nitro-modules', () => ({
+  NitroModules: { box: jest.fn((obj) => ({ unbox: () => obj })) },
+}));
