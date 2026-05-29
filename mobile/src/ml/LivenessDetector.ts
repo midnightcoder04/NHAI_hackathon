@@ -110,4 +110,28 @@ export function check<F>(frames: readonly F[], deps: LivenessDeps<F>): LivenessR
   return fuseLiveness(blink, realProbability);
 }
 
-export const LivenessDetector = { eyeAspectRatio, detectBlink, fuseLiveness, check };
+// MediaPipe FaceMesh 6-point EAR indices (p1/p4 = horizontal corners, (p2,p6)+(p3,p5)
+// = vertical pairs) into the 478-landmark output of MODEL_LIVENESS_LANDMARKS.
+export const EAR_RIGHT_EYE_INDICES = [33, 160, 158, 133, 153, 144] as const;
+export const EAR_LEFT_EYE_INDICES = [362, 385, 387, 263, 373, 380] as const;
+
+/**
+ * Pull the two 6-point eye landmark sets (for EAR) out of the FaceMesh model's
+ * flat output (`[x0,y0,z0, x1,y1,z1, …]`, 478 points). Pass the result frame-by-
+ * frame to `check` via `runLandmarks`.
+ */
+export function extractEyeLandmarks(meshFlat: Float32Array | number[]): EyeLandmarks {
+  const at = (k: number): Point => ({ x: meshFlat[k * 3], y: meshFlat[k * 3 + 1] });
+  return {
+    right: EAR_RIGHT_EYE_INDICES.map(at),
+    left: EAR_LEFT_EYE_INDICES.map(at),
+  };
+}
+
+export const LivenessDetector = {
+  eyeAspectRatio,
+  detectBlink,
+  fuseLiveness,
+  check,
+  extractEyeLandmarks,
+};

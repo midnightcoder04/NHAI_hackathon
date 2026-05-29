@@ -32,3 +32,21 @@ export const MODEL_FACE_DETECTOR = 'blaze_face_short_range_float16.tflite';
 export const MODEL_FACE_EMBEDDING = 'MobileFaceNet_new_latest_int8.tflite';
 export const MODEL_LIVENESS_LANDMARKS = 'face_landmarks_detector_float16.tflite';
 export const MODEL_LIVENESS_ANTISPOOF = 'antispoof_128x128_int8.tflite';
+
+// Model input sizes (square RGB), per scripts/test_*.py.
+export const BLAZEFACE_INPUT_SIZE = 128;
+export const EMBEDDING_INPUT_SIZE = 112;
+export const FACEMESH_INPUT_SIZE = 256;
+export const ANTISPOOF_INPUT_SIZE = 128;
+
+// BlazeFace anchor decode (matches gen_anchors/decode/nms in test_blazeface_f16.py).
+export const BLAZEFACE_NUM_ANCHORS = 896; // 16×16×2 (512) + 8×8×6 (384)
+export const BLAZEFACE_SCORE_THRESHOLD = 0.6;
+export const BLAZEFACE_IOU_THRESHOLD = 0.3;
+// BlazeFace boxes are tight; expand per side so the full face is covered downstream.
+export const BLAZEFACE_BOX_PAD_X = 0.0;
+export const BLAZEFACE_BOX_PAD_Y = 0.5;
+
+// Antispoof passive-liveness ImageNet normalisation (RGB), per test_liveness.py.
+export const ANTISPOOF_MEAN: readonly [number, number, number] = [0.485, 0.456, 0.406];
+export const ANTISPOOF_STD: readonly [number, number, number] = [0.229, 0.224, 0.225];

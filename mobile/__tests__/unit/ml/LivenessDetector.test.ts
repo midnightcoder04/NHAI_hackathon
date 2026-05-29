@@ -14,6 +14,9 @@ import {
   detectBlink,
   fuseLiveness,
   check,
+  extractEyeLandmarks,
+  EAR_RIGHT_EYE_INDICES,
+  EAR_LEFT_EYE_INDICES,
   type Point,
   type EyeLandmarks,
   type LivenessDeps,
@@ -129,5 +132,36 @@ describe('check (frame stream fusion)', () => {
   it('given_no_face_in_any_frame_then_inconclusive', () => {
     const frames = [frame(true, 0.9, false), frame(false, 0.9, false), frame(true, 0.9, false)];
     expect(check(frames, deps())).toBe('inconclusive');
+  });
+});
+
+describe('extractEyeLandmarks (FaceMesh 478-pt → EAR)', () => {
+  it('reads_6_points_per_eye_at_the_mediapipe_indices', () => {
+    const mesh = new Float32Array(478 * 3);
+    // tag landmark k with x=k so we can confirm the right indices are read
+    for (let k = 0; k < 478; k++) mesh[k * 3] = k;
+    const eyes = extractEyeLandmarks(mesh);
+    expect(eyes.right).toHaveLength(6);
+    expect(eyes.left).toHaveLength(6);
+    expect(eyes.right.map((p) => p.x)).toEqual([...EAR_RIGHT_EYE_INDICES]);
+    expect(eyes.left.map((p) => p.x)).toEqual([...EAR_LEFT_EYE_INDICES]);
+  });
+
+  it('produces_eye_geometry_whose_EAR_reads_open_when_lids_are_apart', () => {
+    const mesh = new Float32Array(478 * 3);
+    const set = (k: number, x: number, y: number) => {
+      mesh[k * 3] = x;
+      mesh[k * 3 + 1] = y;
+    };
+    // Lay out the right eye as a wide-open eye: corners apart on x, lids apart on y.
+    const [p1, p2, p3, p4, p5, p6] = EAR_RIGHT_EYE_INDICES;
+    set(p1, 0, 0);
+    set(p4, 4, 0);
+    set(p2, 1, 1);
+    set(p3, 3, 1);
+    set(p5, 3, -1);
+    set(p6, 1, -1);
+    const { right } = extractEyeLandmarks(mesh);
+    expect(eyeAspectRatio(right)).toBeCloseTo(0.5); // (2+2)/(2*4)
   });
 });

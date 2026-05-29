@@ -29,6 +29,11 @@ jest.mock('../../../src/services/VerificationService', () => ({
   useVerificationService: () => ({ verify: mockVerify }),
 }));
 
+// frameProcessor pulls in the native VisionCamera/worklets runtime — stub the hook.
+jest.mock('../../../src/ml/frameProcessor', () => ({
+  useFrameDimsSmokeTest: () => ({}),
+}));
+
 const mockFindById = jest.fn();
 jest.mock('../../../src/db/repositories/PersonnelRepository', () => ({
   usePersonnelRepository: () => ({ findById: mockFindById }),

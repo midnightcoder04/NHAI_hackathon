@@ -8,6 +8,7 @@ import {
 } from 'react-native-vision-camera';
 import { usePersonnelRepository } from '../db/repositories/PersonnelRepository';
 import { useVerificationService, type VerificationEvidence } from '../services/VerificationService';
+import { useFrameDimsSmokeTest } from '../ml/frameProcessor';
 import type { Personnel } from '../models/Personnel';
 import type { VerificationRecord } from '../models/VerificationRecord';
 import VerificationResultOverlay from '../components/VerificationResultOverlay';
@@ -47,6 +48,9 @@ export default function VerificationScreen({
   const device = useCameraDevice('front');
   const personnelRepo = usePersonnelRepository();
   const { verify } = useVerificationService();
+  // T032 frame-output worklet: streams frames off the camera thread (currently a
+  // dims smoke test; the boxed-model detection path attaches here next).
+  const frameOutput = useFrameDimsSmokeTest();
 
   const [phase, setPhase] = useState<Phase>('idle');
   const [result, setResult] = useState<VerificationRecord | null>(null);
@@ -106,7 +110,12 @@ export default function VerificationScreen({
 
   return (
     <View style={styles.container}>
-      <Camera style={StyleSheet.absoluteFill} device={device} isActive={!result} />
+      <Camera
+        style={StyleSheet.absoluteFill}
+        device={device}
+        isActive={!result}
+        outputs={[frameOutput]}
+      />
 
       <View style={styles.guidanceOverlay} pointerEvents="none">
         <Text variant="titleMedium" style={styles.guidanceText}>
