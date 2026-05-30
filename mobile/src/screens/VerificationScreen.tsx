@@ -9,10 +9,14 @@ import {
 import { usePersonnelRepository } from '../db/repositories/PersonnelRepository';
 import { useVerificationService, type VerificationEvidence } from '../services/VerificationService';
 import { useVerificationFrameOutput, type VerificationFrameSample } from '../ml/frameProcessor';
-import { loadFaceDetectorModel, loadFaceLandmarksModel, loadAntispoofModel } from '../ml/modelAssets';
-import { LivenessDetector, type CaptureFrameSample } from '../ml/LivenessDetector';
+import { loadFaceDetectorModel, loadAntispoofModel, loadEmbeddingModel } from '../ml/modelAssets';
+import {
+  LivenessDetector,
+  type CaptureFrameSample,
+  type LivenessResult,
+} from '../ml/LivenessDetector';
 import { EmbeddingModel } from '../ml/EmbeddingModel';
-import { LIVENESS_CAPTURE_WINDOW_MS } from '../constants';
+import { LIVENESS_CAPTURE_WINDOW_MS, LIVENESS_CAPTURE_POLL_MS, EMBEDDING_DIM } from '../constants';
 import type { BoxedTfliteModel } from '../ml/tfliteRuntime';
 import type { DetectedFace } from '../services/VerificationService';
 import type { Personnel } from '../models/Personnel';
@@ -61,8 +65,8 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
   // zeroed stub until T099; it must run in the same worklet pass when it lands so the
   // matched identity stays bound to the same frame proven live.
   const [detectorModel, setDetectorModel] = useState<BoxedTfliteModel | null>(null);
-  const [landmarksModel, setLandmarksModel] = useState<BoxedTfliteModel | null>(null);
   const [antispoofModel, setAntispoofModel] = useState<BoxedTfliteModel | null>(null);
+  const [embedderModel, setEmbedderModel] = useState<BoxedTfliteModel | null>(null);
   useEffect(() => {
     let cancelled = false;
     loadFaceDetectorModel()
@@ -70,16 +74,16 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
         if (!cancelled) setDetectorModel(m);
       })
       .catch(() => setSnackMsg('Failed to load face detection model.'));
-    loadFaceLandmarksModel()
-      .then((m) => {
-        if (!cancelled) setLandmarksModel(m);
-      })
-      .catch(() => console.warn('[verify] landmarks model failed to load; blink disabled'));
     loadAntispoofModel()
       .then((m) => {
         if (!cancelled) setAntispoofModel(m);
       })
       .catch(() => console.warn('[verify] antispoof model failed to load; passive layer disabled'));
+    loadEmbeddingModel()
+      .then((m) => {
+        if (!cancelled) setEmbedderModel(m);
+      })
+      .catch(() => console.warn('[verify] embedding model failed to load; matching disabled'));
     return () => {
       cancelled = true;
     };
@@ -90,35 +94,66 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
   // (passive); `reduceCapture` fuses the window with a continuous-presence gate.
   const samplesRef = useRef<CaptureFrameSample[]>([]);
   const bestFaceRef = useRef<DetectedFace | null>(null);
+  // Raw int8 MobileFaceNet output from the SAME frame as the best-quality face — so the
+  // query identity is read from a frame within the proven-live window (not a later one).
+  const bestEmbeddingRef = useRef<number[] | null>(null);
 
   const onSample = useCallback((sample: VerificationFrameSample) => {
-    const { face, ear, realProb } = sample;
+    const { face, ear, realProb, embedding } = sample;
     if (face && (!bestFaceRef.current || face.qualityScore > bestFaceRef.current.qualityScore)) {
       bestFaceRef.current = face;
+      bestEmbeddingRef.current = embedding;
     }
+    const box = face?.boundingBox;
     const buf = samplesRef.current;
-    buf.push({ facePresent: face != null, ear, realProb });
-    if (buf.length > 90) buf.shift();
+    // Carry the face-box centre + size so reduceCapture can measure head/face MOVEMENT
+    // (the cheap active-liveness signal). `ear` is null now (FaceMesh isn't run).
+    buf.push({
+      facePresent: face != null,
+      ear,
+      realProb,
+      cx: box ? box.x + box.width / 2 : null,
+      cy: box ? box.y + box.height / 2 : null,
+      size: box ? Math.max(box.width, box.height) : null,
+    });
+    if (buf.length > 120) buf.shift();
   }, []);
 
-  // Detection runs every frame (cheap, for the overlay); the liveness stack (FaceMesh
-  // blink + antispoof) runs only while 'capturing'. All layers are fused on the SAME
-  // frame buffer inside the worklet (see frameProcessor) — no swap window between checks.
+  // Detection runs every frame (cheap, for the overlay + movement); antispoof + the
+  // MobileFaceNet embedding run only while 'capturing', fused on the SAME frame buffer
+  // inside the worklet (no swap window between liveness and the identity read). FaceMesh
+  // is not loaded → its block is skipped, so capture frames stay fast for movement.
   const frameOutput = useVerificationFrameOutput(
-    { detector: detectorModel, landmarks: landmarksModel, antispoof: antispoofModel },
+    {
+      detector: detectorModel,
+      landmarks: null,
+      antispoof: antispoofModel,
+      embedder: embedderModel,
+    },
     phase === 'capturing',
     onSample,
   );
 
-  // Default capture: gather same-frame detection + dual-layer liveness evidence across
-  // the ~1 s window, then reduce to VerificationEvidence. Overridable via prop (tests).
+  // Default capture: poll the accumulating frames and EXIT EARLY the moment there's a
+  // confident live/spoof verdict (fast recheck) — otherwise give up at the window
+  // ceiling. Active liveness passes on natural head movement OR a blink; antispoof gates.
   const captureFromFrames = useCallback<CaptureEvidence>(async () => {
     samplesRef.current = [];
     bestFaceRef.current = null;
-    await new Promise((resolve) => setTimeout(resolve, LIVENESS_CAPTURE_WINDOW_MS));
+    bestEmbeddingRef.current = null;
+    const start = Date.now();
+    let liveness: LivenessResult = 'inconclusive';
+    while (Date.now() - start < LIVENESS_CAPTURE_WINDOW_MS) {
+      await new Promise((resolve) => setTimeout(resolve, LIVENESS_CAPTURE_POLL_MS));
+      const verdict = LivenessDetector.reduceCapture(samplesRef.current);
+      if (verdict !== 'inconclusive') {
+        liveness = verdict;
+        break;
+      }
+    }
     const face = bestFaceRef.current;
-    const liveness = LivenessDetector.reduceCapture(samplesRef.current);
-    const queryEmbedding = await EmbeddingModel.extractEmbedding('');
+    const raw = bestEmbeddingRef.current;
+    const queryEmbedding = raw ? EmbeddingModel.finalizeEmbedding(raw) : new Float32Array(EMBEDDING_DIM);
     return { face, liveness, queryEmbedding };
   }, []);
 
@@ -186,7 +221,7 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
 
       <View style={styles.guidanceOverlay} pointerEvents="none">
         <Text variant="titleMedium" style={styles.guidanceText}>
-          {phase === 'capturing' ? 'Blink now' : 'Position face in frame'}
+          {phase === 'capturing' ? 'Look at the camera — move slightly' : 'Position face in frame'}
         </Text>
       </View>
 

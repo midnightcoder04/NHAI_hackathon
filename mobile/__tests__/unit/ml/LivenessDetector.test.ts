@@ -14,6 +14,7 @@ import {
   detectBlink,
   fuseLiveness,
   passiveLiveness,
+  faceMovement,
   reduceCapture,
   check,
   extractEyeLandmarks,
@@ -158,39 +159,70 @@ describe('passiveLiveness (antispoof-only verdict — least-compute layer)', () 
   });
 });
 
-describe('reduceCapture (window of per-frame samples → dual-layer verdict)', () => {
-  const cap = (ear: number | null, realProb: number | null, facePresent = true): CaptureFrameSample => ({
-    facePresent,
-    ear,
-    realProb,
+describe('faceMovement', () => {
+  const pt = (cx: number, cy: number, size = 100): CaptureFrameSample => ({
+    facePresent: true,
+    ear: null,
+    realProb: 0.9,
+    cx,
+    cy,
+    size,
   });
-  const absent: CaptureFrameSample = { facePresent: false, ear: null, realProb: null };
-  // open → closed → open EAR with real texture = a blinking, live face.
-  const liveBlink = [cap(0.5, 0.9), cap(0.05, 0.9), cap(0.5, 0.9)];
+
+  it('given_fewer_than_two_located_faces_then_zero', () => {
+    expect(faceMovement([])).toBe(0);
+    expect(faceMovement([pt(10, 10)])).toBe(0);
+  });
+
+  it('given_moving_centre_then_ratio_of_travel_to_face_size', () => {
+    // centre travels 120px horizontally, mean size 100 → ratio 1.2
+    expect(faceMovement([pt(0, 50), pt(60, 50), pt(120, 50)])).toBeCloseTo(1.2, 5);
+  });
+
+  it('given_only_jitter_then_near_zero', () => {
+    expect(faceMovement([pt(100, 100), pt(101, 100), pt(100, 101)])).toBeLessThan(0.04);
+  });
+});
+
+describe('reduceCapture (window → liveness verdict: movement OR blink, antispoof gates)', () => {
+  const cap = (
+    over: Partial<CaptureFrameSample> = {},
+  ): CaptureFrameSample => ({ facePresent: true, ear: null, realProb: 0.9, cx: 100, cy: 100, size: 100, ...over });
+  const absent: CaptureFrameSample = { facePresent: false, ear: null, realProb: null, cx: null, cy: null, size: null };
+  const still = (n: number, realProb = 0.9): CaptureFrameSample[] =>
+    Array.from({ length: n }, () => cap({ realProb })); // face held perfectly still (no movement)
+  const moving = (n: number, realProb = 0.9): CaptureFrameSample[] =>
+    Array.from({ length: n }, (_, i) => cap({ cx: 100 + i * 30, realProb })); // centre drifts
 
   it('given_no_samples_then_inconclusive', () => {
     expect(reduceCapture([])).toBe('inconclusive');
   });
 
-  it('given_blink_and_real_texture_and_face_held_then_live', () => {
-    expect(reduceCapture(liveBlink)).toBe('live');
+  it('given_too_few_face_frames_then_inconclusive', () => {
+    expect(reduceCapture(moving(3))).toBe('inconclusive'); // < LIVENESS_MIN_FACE_FRAMES (4)
   });
 
-  it('given_blink_but_low_texture_then_spoof', () => {
-    expect(reduceCapture([cap(0.5, 0.1), cap(0.05, 0.1), cap(0.5, 0.1)])).toBe('spoof');
+  it('given_head_movement_and_real_texture_then_live', () => {
+    expect(reduceCapture(moving(5))).toBe('live');
   });
 
-  it('given_real_texture_but_no_blink_then_inconclusive', () => {
-    expect(reduceCapture([cap(0.5, 0.9), cap(0.5, 0.9), cap(0.5, 0.9)])).toBe('inconclusive');
+  it('given_blink_and_real_texture_even_without_movement_then_live', () => {
+    // EAR open→closed→open on a still face (no movement) still passes via the blink OR-branch.
+    const blink = [cap({ ear: 0.5 }), cap({ ear: 0.05 }), cap({ ear: 0.5 }), cap({ ear: 0.5 })];
+    expect(reduceCapture(blink)).toBe('live');
   });
 
-  it('given_too_few_ear_samples_then_inconclusive', () => {
-    expect(reduceCapture([cap(0.5, 0.9), cap(null, 0.9), cap(null, 0.9)])).toBe('inconclusive');
+  it('given_movement_but_low_texture_then_spoof_passive_dominates', () => {
+    expect(reduceCapture(moving(5, 0.1))).toBe('spoof');
+  });
+
+  it('given_real_texture_but_no_movement_and_no_blink_then_inconclusive', () => {
+    expect(reduceCapture(still(5))).toBe('inconclusive');
   });
 
   it('given_face_not_held_for_enough_of_the_window_then_inconclusive_continuity_gate', () => {
-    // 3 present blink frames + 3 absent → presence 0.5 < 0.6 ⇒ possible swap/pull-away.
-    expect(reduceCapture([...liveBlink, absent, absent, absent])).toBe('inconclusive');
+    // 4 moving frames + 4 absent → presence 0.5 < 0.6 ⇒ possible swap/pull-away.
+    expect(reduceCapture([...moving(4), absent, absent, absent, absent])).toBe('inconclusive');
   });
 });
 

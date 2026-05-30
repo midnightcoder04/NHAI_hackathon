@@ -13,6 +13,7 @@ import {
   ANTISPOOF_MEAN,
   ANTISPOOF_STD,
   FACEMESH_INPUT_SIZE,
+  EMBEDDING_INPUT_SIZE,
 } from '../constants';
 import type { DetectedFace } from '../services/VerificationService';
 
@@ -128,24 +129,31 @@ export function useFaceDetectionFrameOutput(
   });
 }
 
-/** The boxed models the verification worklet needs (null until loaded). */
+/**
+ * The boxed models the verification worklet needs (null until loaded). `landmarks`
+ * and `antispoof` back the two liveness layers; `embedder` is MobileFaceNet for the
+ * query identity embedding. Enrollment reuses this hook with only `detector`+`embedder`.
+ */
 export interface VerificationModels {
   detector: BoxedTfliteModel | null;
   landmarks: BoxedTfliteModel | null;
   antispoof: BoxedTfliteModel | null;
+  embedder: BoxedTfliteModel | null;
 }
 
 /**
  * One frame's verification evidence. `face` (detection), `ear` (active blink layer,
- * FaceMesh eye-aspect-ratio), and `realProb` (passive antispoof liveness) are all
- * produced **in the same worklet pass on the same pixel buffer** — so they cannot be
- * sourced from different frames than each other or the match. `ear`/`realProb` are
- * null when liveness isn't being sampled (idle) or no face cleared the detection floor.
+ * FaceMesh eye-aspect-ratio), `realProb` (passive antispoof liveness), and `embedding`
+ * (MobileFaceNet raw int8 [128], pre-dequantise) are all produced **in the same worklet
+ * pass on the same pixel buffer** — so the identity embedding cannot be sourced from a
+ * different frame than the one proven live. All of `ear`/`realProb`/`embedding` are null
+ * when heavy sampling is off (idle) or no face cleared the detection floor.
  */
 export interface VerificationFrameSample {
   face: DetectedFace | null;
   ear: number | null;
   realProb: number | null;
+  embedding: number[] | null;
 }
 
 /**
@@ -172,12 +180,18 @@ export function useVerificationFrameOutput(
   onSample: (sample: VerificationFrameSample) => void,
 ): CameraFrameOutput {
   const detBoxed = models.detector?.boxed ?? null;
+  // FaceMesh (blink) is intentionally NOT loaded for verification anymore — active
+  // liveness is the cheap, fast-sampling MOVEMENT signal (LivenessDetector.faceMovement)
+  // computed JS-side from the detection box. lmBoxed stays null so the FaceMesh block
+  // below is skipped, keeping the per-frame cost low (detection + antispoof + embedding).
   const lmBoxed = models.landmarks?.boxed ?? null;
   const asBoxed = models.antispoof?.boxed ?? null;
+  const emBoxed = models.embedder?.boxed ?? null;
   const runLiveness = sampleLiveness;
   const S = BLAZEFACE_INPUT_SIZE;
   const MESH = FACEMESH_INPUT_SIZE;
   const AS = ANTISPOOF_INPUT_SIZE;
+  const EMB = EMBEDDING_INPUT_SIZE;
   const scoreFloor = BLAZEFACE_SCORE_THRESHOLD;
   const padY = BLAZEFACE_BOX_PAD_Y;
   // Plain-number captures (avoid serialising arrays into the worklet).
@@ -193,8 +207,11 @@ export function useVerificationFrameOutput(
     score: number,
     ear: number | null,
     realProb: number | null,
+    embedding: number[] | null,
     w: number,
     h: number,
+    fmt: string,
+    ori: string,
   ) => {
     const dims = { width: w, height: h };
     let face: DetectedFace | null = null;
@@ -211,12 +228,17 @@ export function useVerificationFrameOutput(
       );
     }
     if (__inferenceLogCounter++ % 30 === 0) {
+      // `score` here is the raw best-anchor sigmoid confidence (pre-quality). If faces
+      // never detect on-device, check fmt/ori below and the score: low score = bad
+      // pixels (format/orientation); good score + low quality = framing/size.
       console.log(
         `[frameProcessor] verify: face=${face ? face.qualityScore.toFixed(2) : 'none'} ` +
-          `ear=${ear == null ? 'n/a' : ear.toFixed(3)} real=${realProb == null ? 'n/a' : realProb.toFixed(2)}`,
+          `score=${score.toFixed(2)} ear=${ear == null ? 'n/a' : ear.toFixed(3)} ` +
+          `real=${realProb == null ? 'n/a' : realProb.toFixed(2)} emb=${embedding == null ? 'n/a' : 'ok'} ` +
+          `| fmt=${fmt} ori=${ori} up=${w}x${h}`,
       );
     }
-    onSample({ face, ear, realProb });
+    onSample({ face, ear, realProb, embedding });
   };
   const handleError = (msg: string) => {
     console.warn(`[frameProcessor] verify error: ${msg}`);
@@ -230,10 +252,57 @@ export function useVerificationFrameOutput(
         frame.dispose();
         return;
       }
-      const w = frame.width;
-      const h = frame.height;
       try {
-        const rgb = new Uint8Array(frame.getPixelBuffer());
+        // VisionCamera 'rgb' frames are non-planar 32-bit BGRA ('rgb-bgra-32-bit'):
+        // 4 bytes/pixel, row stride = bytesPerRow (may be padded), and NOT auto-rotated
+        // (frame.orientation). Normalise ONCE into an upright, tight 3-byte RGB buffer
+        // (long side capped to ~640 to bound cost); every sampling loop below then works
+        // in simple upright RGB space. The old code assumed tight 3-byte upright RGB,
+        // which is garbage on-device → detection never fired → always quality_insufficient.
+        const raw = new Uint8Array(frame.getPixelBuffer());
+        const bufW = frame.width;
+        const bufH = frame.height;
+        const bpr = frame.bytesPerRow > 0 ? frame.bytesPerRow : bufW * 4;
+        const ori = frame.orientation;
+        const fmt = frame.pixelFormat;
+        const rIdx = fmt.indexOf('bgra') >= 0 ? 2 : 0; // BGRA → R@2; RGBA → R@0
+        const bIdx = 2 - rIdx;
+        const swap = ori === 'left' || ori === 'right';
+        const upW = swap ? bufH : bufW;
+        const upH = swap ? bufW : bufH;
+        const longSide = upW > upH ? upW : upH;
+        const scl = longSide > 640 ? 640 / longSide : 1;
+        const w = Math.max(1, Math.round(upW * scl));
+        const h = Math.max(1, Math.round(upH * scl));
+        const rgb = new Uint8Array(w * h * 3);
+        for (let y = 0; y < h; y++) {
+          const uy = Math.min(upH - 1, Math.floor((y * upH) / h));
+          for (let x = 0; x < w; x++) {
+            const ux = Math.min(upW - 1, Math.floor((x * upW) / w));
+            let bx: number;
+            let by: number;
+            if (ori === 'up') {
+              bx = ux;
+              by = uy;
+            } else if (ori === 'down') {
+              bx = bufW - 1 - ux;
+              by = bufH - 1 - uy;
+            } else if (ori === 'right') {
+              // 'right' = buffer is the upright image rotated 90° CW.
+              bx = bufW - 1 - uy;
+              by = ux;
+            } else {
+              // 'left' = buffer is the upright image rotated 90° CCW.
+              bx = uy;
+              by = bufH - 1 - ux;
+            }
+            const so = by * bpr + bx * 4;
+            const di = (y * w + x) * 3;
+            rgb[di] = raw[so + rIdx];
+            rgb[di + 1] = raw[so + 1];
+            rgb[di + 2] = raw[so + bIdx];
+          }
+        }
 
         // 1) BlazeFace detection input: resize → [-1,1].
         const det = new Float32Array(S * S * 3);
@@ -268,7 +337,7 @@ export function useVerificationFrameOutput(
         if (bi < 0 || bs < scoreFloor) {
           // No usable face: report and bail. `finally` disposes the frame — do NOT
           // dispose here too, or the double-dispose null-derefs in Nitro disposeRaw.
-          runOnJS(handleSample)(null, 0, null, null, w, h);
+          runOnJS(handleSample)(null, 0, null, null, null, w, h, fmt, ori);
           return;
         }
 
@@ -311,6 +380,7 @@ export function useVerificationFrameOutput(
         //    frame than the other or the match.
         let ear: number | null = null;
         let realProb: number | null = null;
+        let embedding: number[] | null = null;
         if (runLiveness) {
           // 6 BlazeFace keypoints of the best anchor: 0/1 = eyes, 3 = mouth.
           const kpx0 = regs[o + 4] / S + ax;
@@ -425,9 +495,41 @@ export function useVerificationFrameOutput(
               realProb = e1 / (e0 + e1);
             }
           }
+
+          // --- IDENTITY: MobileFaceNet on a tight face crop → 112² → q = px-128 (int8)
+          //     → raw int8 [128], copied to a plain array for the worklet→JS hop (JS
+          //     dequantises + L2-normalises via finalizeEmbedding). Same frame as the
+          //     liveness layers above ⇒ identity is bound to the proven-live pixels. ---
+          if (emBoxed) {
+            let ex0 = Math.floor((cx - bw / 2) * w);
+            let ey0 = Math.floor((cy - bh / 2) * h);
+            let ex1 = Math.floor((cx + bw / 2) * w);
+            let ey1 = Math.floor((cy + bh / 2) * h);
+            ex0 = ex0 < 0 ? 0 : ex0;
+            ey0 = ey0 < 0 ? 0 : ey0;
+            ex1 = ex1 > w ? w : ex1;
+            ey1 = ey1 > h ? h : ey1;
+            const cw = ex1 - ex0;
+            const chh = ey1 - ey0;
+            if (cw > 1 && chh > 1) {
+              const emIn = new Int8Array(EMB * EMB * 3);
+              for (let y = 0; y < EMB; y++) {
+                const sy = ey0 + Math.min(chh - 1, Math.floor((y * chh) / EMB));
+                for (let x = 0; x < EMB; x++) {
+                  const sx = ex0 + Math.min(cw - 1, Math.floor((x * cw) / EMB));
+                  const si = (sy * w + sx) * 3;
+                  const di = (y * EMB + x) * 3;
+                  emIn[di] = rgb[si] - 128;
+                  emIn[di + 1] = rgb[si + 1] - 128;
+                  emIn[di + 2] = rgb[si + 2] - 128;
+                }
+              }
+              embedding = Array.from(new Int8Array(emBoxed.unbox().runSync([emIn.buffer])[0]));
+            }
+          }
         }
 
-        runOnJS(handleSample)(boxPx, bs, ear, realProb, w, h);
+        runOnJS(handleSample)(boxPx, bs, ear, realProb, embedding, w, h, fmt, ori);
       } catch (e) {
         runOnJS(handleError)(String(e));
       } finally {

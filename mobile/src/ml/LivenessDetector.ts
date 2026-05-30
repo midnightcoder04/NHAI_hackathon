@@ -3,6 +3,8 @@ import {
   LIVENESS_EAR_CLOSED_THRESHOLD,
   LIVENESS_ANTISPOOF_REAL_THRESHOLD,
   LIVENESS_MIN_PRESENCE_RATIO,
+  LIVENESS_MIN_FACE_FRAMES,
+  LIVENESS_MOVE_RATIO_THRESHOLD,
 } from '../constants';
 import type { LivenessResult } from '../services/VerificationService';
 
@@ -108,34 +110,74 @@ export function passiveLiveness(realProbabilities: readonly number[]): LivenessR
 
 /**
  * One frame of the live capture window, as produced by the verification worklet:
- * whether a face was tracked this frame, its eye-aspect-ratio (active blink layer,
- * null if FaceMesh yielded nothing), and the antispoof real-probability (passive
- * layer, null if not sampled this frame).
+ * whether a face was tracked, the face-box centre + size (for the MOVEMENT active
+ * signal), the eye-aspect-ratio (optional blink signal, null when FaceMesh isn't run),
+ * and the antispoof real-probability (passive layer, null if not sampled this frame).
+ * `cx`/`cy`/`size` are in any consistent unit (e.g. frame pixels) — movement is measured
+ * as a ratio to `size`, so it's scale-invariant.
  */
 export interface CaptureFrameSample {
   facePresent: boolean;
   ear: number | null;
   realProb: number | null;
+  cx: number | null;
+  cy: number | null;
+  size: number | null;
 }
 
 export interface ReduceCaptureOptions {
   blinkFrames?: number;
   minPresenceRatio?: number;
+  minFaceFrames?: number;
+  moveRatioThreshold?: number;
 }
 
 /**
- * Reduce a whole capture window to a single dual-layer verdict, fusing the ACTIVE
- * (blink/EAR) and PASSIVE (antispoof texture) layers over evidence that all came from
- * the same continuous, face-tracked presentation:
+ * Natural head/face movement across the window, as the face-box centre's travel
+ * (bounding range of the centres) divided by the mean face size. Scale-invariant, and
+ * derived purely from the detector box that every frame already produces — so it's the
+ * cheap, fast-sampling active-liveness signal (a live person never holds perfectly
+ * rigid; a still photo on a stand does). Returns 0 with fewer than two located faces.
+ */
+export function faceMovement(samples: readonly CaptureFrameSample[]): number {
+  const pts = samples.filter(
+    (s): s is CaptureFrameSample & { cx: number; cy: number; size: number } =>
+      s.facePresent && s.cx !== null && s.cy !== null && s.size !== null && s.size > 0,
+  );
+  if (pts.length < 2) return 0;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let sizeSum = 0;
+  for (const p of pts) {
+    if (p.cx < minX) minX = p.cx;
+    if (p.cx > maxX) maxX = p.cx;
+    if (p.cy < minY) minY = p.cy;
+    if (p.cy > maxY) maxY = p.cy;
+    sizeSum += p.size;
+  }
+  const meanSize = sizeSum / pts.length;
+  return meanSize > 0 ? Math.hypot(maxX - minX, maxY - minY) / meanSize : 0;
+}
+
+/**
+ * Reduce a whole capture window to a single liveness verdict, fusing an ACTIVE layer
+ * with the PASSIVE (antispoof texture) layer over evidence from one continuous,
+ * face-tracked presentation:
  *
  *  1. **Continuity gate** — the face must be tracked across ≥ `minPresenceRatio` of the
- *     window's frames. A photo-swap or pull-away mid-window drops below this → reject.
- *     This is what stops a "blink with a real face, then show a photo to match" attack:
- *     the gap (or the photo's failing antispoof) breaks the single-presentation chain.
- *  2. **Active** — `detectBlink` over the EAR series (needs ≥ `blinkFrames` samples).
- *  3. **Passive** — mean antispoof real-probability.
- *  4. `fuseLiveness`: passive dominates (low texture ⇒ spoof regardless of blink); a real
- *     texture WITH a confirmed blink ⇒ live; real texture but no blink ⇒ inconclusive.
+ *     window's frames AND in ≥ `minFaceFrames` frames. A photo-swap or pull-away
+ *     mid-window drops below this → inconclusive (keeps liveness + match one
+ *     presentation, closing the time-of-check/time-of-use gap).
+ *  2. **Passive (dominant)** — mean antispoof real-probability; below threshold ⇒ spoof,
+ *     regardless of any active signal (a wobbled/− blinking photo is still a photo).
+ *  3. **Active (lenient, OR of two signals)** — natural head **movement** (cheap, every
+ *     frame) OR a **blink** (EAR dip, only when FaceMesh ran). Either confirms a live,
+ *     interacting subject. Movement is primary because it samples fast and doesn't need
+ *     the heavy landmark model; blink is a bonus when present.
+ *  4. Real texture + an active signal ⇒ live; real texture but no active signal yet ⇒
+ *     inconclusive (the caller keeps sampling / the operator moves slightly).
  */
 export function reduceCapture(
   samples: readonly CaptureFrameSample[],
@@ -143,18 +185,22 @@ export function reduceCapture(
 ): LivenessResult {
   const blinkFrames = opts.blinkFrames ?? LIVENESS_BLINK_FRAMES;
   const minPresence = opts.minPresenceRatio ?? LIVENESS_MIN_PRESENCE_RATIO;
+  const minFaceFrames = opts.minFaceFrames ?? LIVENESS_MIN_FACE_FRAMES;
+  const moveThreshold = opts.moveRatioThreshold ?? LIVENESS_MOVE_RATIO_THRESHOLD;
   if (samples.length === 0) return 'inconclusive';
 
   const present = samples.filter((s) => s.facePresent).length;
-  if (present / samples.length < minPresence) return 'inconclusive';
+  if (present < minFaceFrames || present / samples.length < minPresence) return 'inconclusive';
 
-  const earSeries = samples.map((s) => s.ear).filter((e): e is number => e !== null);
-  if (earSeries.length < blinkFrames) return 'inconclusive';
-
+  // Passive gate dominates: a low real-probability is a spoof no matter how it moved.
   const realProbs = samples.map((s) => s.realProb).filter((p): p is number => p !== null);
-  const blink = detectBlink(earSeries, blinkFrames);
-  const realProbability = realProbs.length === 0 ? 0 : mean(realProbs);
-  return fuseLiveness(blink, realProbability);
+  if (realProbs.length > 0 && mean(realProbs) < LIVENESS_ANTISPOOF_REAL_THRESHOLD) return 'spoof';
+
+  // Active: movement (primary) OR blink (bonus, when EAR present).
+  const moved = faceMovement(samples) >= moveThreshold;
+  const earSeries = samples.map((s) => s.ear).filter((e): e is number => e !== null);
+  const blink = earSeries.length >= blinkFrames && detectBlink(earSeries, blinkFrames);
+  return moved || blink ? 'live' : 'inconclusive';
 }
 
 /**
@@ -202,6 +248,7 @@ export const LivenessDetector = {
   detectBlink,
   fuseLiveness,
   passiveLiveness,
+  faceMovement,
   reduceCapture,
   check,
   extractEyeLandmarks,

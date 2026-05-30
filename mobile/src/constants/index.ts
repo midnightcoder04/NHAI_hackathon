@@ -19,14 +19,25 @@ export const LIVENESS_EAR_CLOSED_THRESHOLD = 0.2;
 // Passive layer: mean Antispoof "real" probability (0..1) must meet this or the
 // frames are classified as a spoof (printed photo / screen replay).
 export const LIVENESS_ANTISPOOF_REAL_THRESHOLD = 0.5;
-// On "Start Verification", how long the frame-processor runs the full liveness stack
-// (FaceMesh blink + Antispoof) on each frame to gather evidence bound to the same
-// instant as the match. Kept to ~1 s for the sub-second auth target (SC-002): a short
-// burst whose first frames each go through ALL models, enough to catch a blink.
-export const LIVENESS_CAPTURE_WINDOW_MS = 1000;
+// Max time the frame-processor gathers evidence on "Start Verification" before giving
+// up. The capture polls and EXITS EARLY the instant it has a confident live/spoof
+// verdict (see LIVENESS_CAPTURE_POLL_MS), so a cooperative scan usually finishes well
+// under this — this is just the worst-case ceiling.
+export const LIVENESS_CAPTURE_WINDOW_MS = 2000;
+// How often the capture loop re-checks the accumulated frames for a confident verdict.
+export const LIVENESS_CAPTURE_POLL_MS = 150;
+// Minimum face-bearing frames before a live/spoof verdict is trusted (avoid deciding off
+// one or two noisy frames).
+export const LIVENESS_MIN_FACE_FRAMES = 4;
+// Active liveness via natural head/face MOVEMENT (cheap, every detection frame): the
+// face-box centre must wander at least this fraction of the face's size across the
+// window. Distinguishes a live, slightly-moving person from a rigid still — and unlike
+// blink it needs no extra model, so it samples fast and is lenient. A wobbled photo can
+// pass this, but the passive antispoof texture gate still rejects it.
+export const LIVENESS_MOVE_RATIO_THRESHOLD = 0.04;
 // Fraction of capture-window frames that must contain a tracked face for the result to
-// count. A photo-swap or pull-away mid-window drops below this → inconclusive (this is
-// the continuous-presence gate that keeps blink + antispoof + match one presentation).
+// count. A photo-swap or pull-away mid-window drops below this → inconclusive (the
+// continuous-presence gate that keeps liveness + match one presentation).
 export const LIVENESS_MIN_PRESENCE_RATIO = 0.6;
 
 export const SYNC_BATCH_MAX_PERSONNEL = 100;
@@ -47,6 +58,17 @@ export const BLAZEFACE_INPUT_SIZE = 128;
 export const EMBEDDING_INPUT_SIZE = 112;
 export const FACEMESH_INPUT_SIZE = 256;
 export const ANTISPOOF_INPUT_SIZE = 128;
+
+// MobileFaceNet INT8 (true int8 I/O) quantization params, extracted from
+// MobileFaceNet_new_latest_int8.tflite via ai_edge_litert (see scripts/test_recognition.py).
+// Input:  q = round((px/255) / scale + zeroPoint); scale=1/255, zeroPoint=-128 ⇒ q = px-128.
+// Output: v = scale·(int8 - zeroPoint); zeroPoint=0, and the scale CANCELS under the L2
+// normalisation used for cosine matching — kept only for an exact dequantisation.
+export const EMBEDDING_INPUT_SCALE = 0.003921568859368563;
+export const EMBEDDING_INPUT_ZERO_POINT = -128;
+export const EMBEDDING_OUTPUT_SCALE = 0.0078125;
+export const EMBEDDING_OUTPUT_ZERO_POINT = 0;
+export const EMBEDDING_DIM = 128;
 
 // BlazeFace anchor decode (matches gen_anchors/decode/nms in test_blazeface_f16.py).
 export const BLAZEFACE_NUM_ANCHORS = 896; // 16×16×2 (512) + 8×8×6 (384)

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -28,6 +28,9 @@ import { usePersonnelRepository } from '../db/repositories/PersonnelRepository';
 import { useFaceImageRepository } from '../db/repositories/FaceImageRepository';
 import { ImageStorageService, StorageFullError } from '../services/ImageStorageService';
 import { EmbeddingModel } from '../ml/EmbeddingModel';
+import { useVerificationFrameOutput, type VerificationFrameSample } from '../ml/frameProcessor';
+import { loadFaceDetectorModel, loadEmbeddingModel } from '../ml/modelAssets';
+import type { BoxedTfliteModel } from '../ml/tfliteRuntime';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 
 type RouteType = RouteProp<RootStackParamList, 'PersonnelDetail'>;
@@ -62,6 +65,46 @@ export default function PersonnelDetailScreen() {
   const cameraRef = useRef<CameraRef>(null);
   const photoOutput = usePhotoOutput();
 
+  // BlazeFace + MobileFaceNet for enrollment: the embedding is captured from the live
+  // frame ROI (same worklet path as verification) so the enrolled gallery embedding
+  // uses the IDENTICAL crop+preprocess as the live query — required for cosine matching.
+  const [detectorModel, setDetectorModel] = useState<BoxedTfliteModel | null>(null);
+  const [embedderModel, setEmbedderModel] = useState<BoxedTfliteModel | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadFaceDetectorModel()
+      .then((m) => {
+        if (!cancelled) setDetectorModel(m);
+      })
+      .catch(() => console.warn('[enroll] detector model failed to load'));
+    loadEmbeddingModel()
+      .then((m) => {
+        if (!cancelled) setEmbedderModel(m);
+      })
+      .catch(() => console.warn('[enroll] embedding model failed to load'));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Highest-quality face embedding seen in the live preview (raw int8; finalised on
+  // capture). bestQuality tracks the detection quality of the frame it came from.
+  const bestEmbeddingRef = useRef<number[] | null>(null);
+  const bestQualityRef = useRef(-1);
+  const onSample = useCallback((sample: VerificationFrameSample) => {
+    if (sample.face && sample.embedding && sample.face.qualityScore > bestQualityRef.current) {
+      bestQualityRef.current = sample.face.qualityScore;
+      bestEmbeddingRef.current = sample.embedding;
+    }
+  }, []);
+  // Reuse the verification worklet with only detector + embedder (no liveness layers):
+  // detection every frame + MobileFaceNet on the face ROI while the camera modal is open.
+  const embeddingOutput = useVerificationFrameOutput(
+    { detector: detectorModel, landmarks: null, antispoof: null, embedder: embedderModel },
+    cameraVisible,
+    onSample,
+  );
+
   useEffect(() => {
     if (!isEditMode || !personnelId) return;
     personnelRepo.findById(personnelId).then(p => {
@@ -75,19 +118,27 @@ export default function PersonnelDetailScreen() {
 
   function openCamera() {
     if (!hasPermission) requestPermission();
+    bestEmbeddingRef.current = null;
+    bestQualityRef.current = -1;
     setCameraVisible(true);
   }
 
   async function capturePhoto() {
+    // Always capture the photo. The face embedding is read best-effort from the live
+    // preview frames (same crop+preprocess as the verification query); if no face was
+    // seen we still save the photo but warn that recognition won't match without it.
     try {
       const photo = await photoOutput.capturePhotoToFile({}, {});
       const now = Date.now();
       const fileName = `${personnelId ?? 'new'}_${now}.jpg`;
       const savedPath = await ImageStorageService.save(photo.filePath, fileName);
-      const embedding = await EmbeddingModel.extractEmbedding(savedPath);
+      const raw = bestEmbeddingRef.current;
       setCapturedImagePath(savedPath);
-      setCapturedEmbedding(embedding);
+      setCapturedEmbedding(raw ? EmbeddingModel.finalizeEmbedding(raw) : null);
       setCameraVisible(false);
+      if (!raw) {
+        setSnackMsg('Photo saved, but no face was detected — recognition may not match. Retake with your face centered.');
+      }
     } catch (err) {
       setCameraVisible(false);
       if (err instanceof StorageFullError) {
@@ -225,7 +276,7 @@ export default function PersonnelDetailScreen() {
               style={StyleSheet.absoluteFill}
               device={device}
               isActive={cameraVisible}
-              outputs={[photoOutput]}
+              outputs={[photoOutput, embeddingOutput]}
             />
             <View style={styles.cameraControls}>
               <Button mode="contained-tonal" onPress={() => setCameraVisible(false)}>

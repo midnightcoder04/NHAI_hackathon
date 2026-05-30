@@ -34,7 +34,15 @@ jest.mock('../../../src/db/repositories/FaceImageRepository', () => ({
   useFaceImageRepository: () => ({ create: jest.fn() }),
 }));
 jest.mock('../../../src/ml/EmbeddingModel', () => ({
-  EmbeddingModel: { extractEmbedding: jest.fn().mockResolvedValue(new Float32Array(128)) },
+  EmbeddingModel: { finalizeEmbedding: jest.fn(() => new Float32Array(128)) },
+}));
+// frameProcessor pulls in the native worklets runtime; modelAssets require()s .tflite.
+jest.mock('../../../src/ml/frameProcessor', () => ({
+  useVerificationFrameOutput: () => ({}),
+}));
+jest.mock('../../../src/ml/modelAssets', () => ({
+  loadFaceDetectorModel: () => new Promise(() => {}),
+  loadEmbeddingModel: () => new Promise(() => {}),
 }));
 
 import PersonnelDetailScreen from '../../../src/screens/PersonnelDetailScreen';

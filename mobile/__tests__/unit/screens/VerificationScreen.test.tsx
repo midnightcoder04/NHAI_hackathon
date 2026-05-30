@@ -38,6 +38,7 @@ jest.mock('../../../src/ml/modelAssets', () => ({
   loadFaceDetectorModel: () => new Promise(() => {}), // never resolves in tests
   loadFaceLandmarksModel: () => new Promise(() => {}),
   loadAntispoofModel: () => new Promise(() => {}),
+  loadEmbeddingModel: () => new Promise(() => {}),
 }));
 
 const mockFindById = jest.fn();
