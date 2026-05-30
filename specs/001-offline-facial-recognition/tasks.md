@@ -169,14 +169,14 @@ Every implementation task here is governed by strict Red → Green → Refactor:
 
 ### Implementation for User Story 4
 
-- [ ] T065 [P] [US4] Implement `BackupJobRepository` in `mobile/src/db/repositories/BackupJobRepository.ts`: `create(job: Omit<BackupJob, 'id'>): Promise<BackupJob>`, `updateStatus(id, fields: Partial<BackupJob>): Promise<void>`, `findLatest(): Promise<BackupJob | null>`, `findAll(limit: number): Promise<BackupJob[]>`
-- [ ] T066 [US4] Implement `BackupStatusService` in `mobile/src/services/BackupStatusService.ts`: `startJob(): Promise<string>` (creates backup_job with status `in_progress`), `completeJob(id, summary)`, `failJob(id, errorMessage)`, `cancelJob(id)`; expose `getStatus(): Promise<{ lastSyncTime, pendingCount, latestJob }>`
-- [ ] T067 [US4] Integrate `BackupStatusService` with `SyncService.ts`: call `startJob()` before outbox dispatch, `completeJob()` on full success, `failJob()` on unrecoverable error, `cancelJob()` when operator cancels
-- [ ] T068 [US4] Implement `BackupStatusScreen` in `mobile/src/screens/BackupStatusScreen.tsx` using React Native Paper: display last successful sync time, pending record count (from `SyncOutboxRepository.countPending()`), current backup status, error message (if any), a "Retry" button (visible when status is `failed`), and a "Cancel" button (visible when status is `in_progress`)
-- [ ] T069 [US4] Wire "Retry" button in `BackupStatusScreen.tsx` to call `SyncService.triggerSync()` which resets `failed` outbox entries back to `pending` status and re-runs the outbox dispatch loop
-- [ ] T070 [US4] Wire "Cancel" button in `BackupStatusScreen.tsx`: set a cancellation flag on `SyncService` that the dispatch loop checks between batches; call `BackupStatusService.cancelJob()` when acknowledged
-- [ ] T071 [US4] Add `BackupStatusScreen` route to `AppNavigator.tsx` and add a "Backup Status" icon button to the `PersonnelListScreen.tsx` header right area
-- [ ] T072 [P] [US4] Implement push notification for backup events in `mobile/src/services/BackupStatusService.ts` using `expo-notifications`: request permission on first sync; send a local notification on `completeJob` ("Sync complete: N records uploaded") and `failJob` ("Sync failed: {errorMessage}")
+- [x] T065 [P] [US4] Implement `BackupJobRepository` in `mobile/src/db/repositories/BackupJobRepository.ts`: `create(job: Omit<BackupJob, 'id'>): Promise<BackupJob>`, `updateStatus(id, fields: Partial<BackupJob>): Promise<void>`, `findLatest(): Promise<BackupJob | null>`, `findAll(limit: number): Promise<BackupJob[]>`
+- [x] T066 [US4] Implement `BackupStatusService` in `mobile/src/services/BackupStatusService.ts`: `startJob(): Promise<string>` (creates backup_job with status `in_progress`), `completeJob(id, summary)`, `failJob(id, errorMessage)`, `cancelJob(id)`; expose `getStatus(): Promise<{ lastSyncTime, pendingCount, latestJob }>`
+- [x] T067 [US4] Integrate `BackupStatusService` with `SyncService.ts`: call `startJob()` before outbox dispatch, `completeJob()` on full success, `failJob()` on unrecoverable error, `cancelJob()` when operator cancels
+- [x] T068 [US4] Implement `BackupStatusScreen` in `mobile/src/screens/BackupStatusScreen.tsx` using React Native Paper: display last successful sync time, pending record count (from `SyncOutboxRepository.countPending()`), current backup status, error message (if any), a "Retry" button (visible when status is `failed`), and a "Cancel" button (visible when status is `in_progress`)
+- [x] T069 [US4] Wire "Retry" button in `BackupStatusScreen.tsx` to call `SyncService.triggerSync()` which resets `failed` outbox entries back to `pending` status and re-runs the outbox dispatch loop
+- [x] T070 [US4] Wire "Cancel" button in `BackupStatusScreen.tsx`: set a cancellation flag on `SyncService` that the dispatch loop checks between batches; call `BackupStatusService.cancelJob()` when acknowledged
+- [x] T071 [US4] Add `BackupStatusScreen` route to `AppNavigator.tsx` and add a "Backup Status" icon button to the `PersonnelListScreen.tsx` header right area
+- [x] T072 [P] [US4] Implement push notification for backup events in `mobile/src/services/BackupStatusService.ts` using `expo-notifications`: request permission on first sync; send a local notification on `completeJob` ("Sync complete: N records uploaded") and `failJob` ("Sync failed: {errorMessage}")
 
 **Checkpoint**: US4 complete — backup management panel with retry, cancel, and notifications works. All four user stories independently functional.
 
@@ -221,8 +221,8 @@ Every implementation task here is governed by strict Red → Green → Refactor:
 - [x] T093 [US3] Failing **contract tests** for `contracts/sync-api.md` (`POST /sync/batch`, `PUT /sync/images/presign` request/response + 409/400 error bodies) in `mobile/__tests__/contract/`; MUST run before integration/E2E (Constitution III) — precedes T048
 - [x] T094 [P] [US3] Failing unit tests for Lambda processors (Personnel newest-wins upsert; Verification/FaceImage idempotent insert) in `infra/lambda/sync-engine/__tests__/` — precedes T054–T056
 - [x] T095 [US3] Failing integration test for the outbox dispatch loop (mocked NetInfo + real SQLite outbox; retry/backoff; 409 duplicate handling) — precedes T049
-- [ ] T096 [US4] Failing unit tests for `BackupStatusService` (start/complete/fail/cancel; `getStatus` aggregation) — precedes T066
-- [ ] T097 [US4] Failing component tests for `BackupStatusScreen` (Retry visible only when `failed`; Cancel only when `in_progress`) — precedes T068
+- [x] T096 [US4] Failing unit tests for `BackupStatusService` (start/complete/fail/cancel; `getStatus` aggregation) — precedes T066
+- [x] T097 [US4] Failing component tests for `BackupStatusScreen` (Retry visible only when `failed`; Cancel only when `in_progress`) — precedes T068
 
 **Checkpoint**: Coverage gates green (≥ 80 % line / ≥ 70 % branch); contract tests pass.
 

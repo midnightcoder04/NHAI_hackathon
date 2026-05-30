@@ -21,6 +21,12 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 
 import { AuthService, type AwsCredentialIdentity } from './AuthService';
 import {
+  startJob as bsStartJob,
+  completeJob as bsCompleteJob,
+  failJob as bsFailJob,
+  cancelJob as bsCancelJob,
+} from './BackupStatusService';
+import {
   BATCH_MAX_PERSONNEL,
   BATCH_MAX_VERIFICATIONS,
   BATCH_MAX_FACE_IMAGES,
@@ -349,15 +355,34 @@ async function submitBatch(
 
 const batchLimit = BATCH_MAX_PERSONNEL + BATCH_MAX_VERIFICATIONS + BATCH_MAX_FACE_IMAGES;
 
+// T070: cancellation flag — set by requestCancel(), checked in maybeTriggerSync
+let cancelRequested = false;
+
+/** T070: Request cancellation of the active or next sync cycle. */
+export function requestCancel(): void {
+  cancelRequested = true;
+}
+
 export async function runDispatchCycle(db: Db): Promise<void> {
   const pending = await dbDequeuePending(db, batchLimit);
   if (pending.length === 0) return;
+
+  // T067: create a backup job to track this dispatch cycle
+  let jobId: string | undefined;
+  try {
+    jobId = await bsStartJob(db as SQLiteDatabase);
+  } catch {
+    // backup job tracking is best-effort — never block sync
+  }
 
   let credentials: AwsCredentialIdentity;
   try {
     credentials = await AuthService.getCredentials();
   } catch (err) {
     console.warn('[SyncService] Failed to obtain credentials:', err);
+    if (jobId) {
+      await bsFailJob(db as SQLiteDatabase, jobId, 'Failed to obtain AWS credentials').catch(() => {});
+    }
     return;
   }
 
@@ -440,6 +465,9 @@ export async function runDispatchCycle(db: Db): Promise<void> {
     for (const e of successfulEntries) {
       await handleEntryFailureWithRetry(db, e, errMsg);
     }
+    if (jobId) {
+      await bsFailJob(db as SQLiteDatabase, jobId, errMsg).catch(() => {});
+    }
     return;
   }
 
@@ -451,6 +479,14 @@ export async function runDispatchCycle(db: Db): Promise<void> {
       await dbMarkAcknowledged(db, e.id);
       await dbMarkRecordSynced(db, e.recordType, e.recordId);
     }
+    if (jobId) {
+      await bsCompleteJob(db as SQLiteDatabase, jobId, {
+        recordsPersonnel: personnelEntries.length,
+        recordsVerification: verificationEntries.length,
+        recordsImages: faceImageEntries.filter((e) => !faceImagesFailed.includes(e.id)).length,
+        bytesTransferred: 0,
+      }).catch(() => {});
+    }
     return;
   }
 
@@ -460,6 +496,14 @@ export async function runDispatchCycle(db: Db): Promise<void> {
     console.info(`[SyncService] Batch ${body.batchId} already processed — marking acknowledged`);
     for (const e of successfulEntries) {
       await dbMarkAcknowledged(db, e.id);
+    }
+    if (jobId) {
+      await bsCompleteJob(db as SQLiteDatabase, jobId, {
+        recordsPersonnel: personnelEntries.length,
+        recordsVerification: verificationEntries.length,
+        recordsImages: faceImageEntries.length,
+        bytesTransferred: 0,
+      }).catch(() => {});
     }
     return;
   }
@@ -489,9 +533,11 @@ export async function runDispatchCycle(db: Db): Promise<void> {
       if (offendingIds.has(e.id)) {
         await dbMarkFailed(db, e.id, firstDetailMsg);
       } else {
-        // Non-offending entries: also fail but note they were collateral
         await handleEntryFailureWithRetry(db, e, `Batch rejected: ${body.message}`);
       }
+    }
+    if (jobId) {
+      await bsFailJob(db as SQLiteDatabase, jobId, `Validation error: ${body.message}`).catch(() => {});
     }
     return;
   }
@@ -500,6 +546,9 @@ export async function runDispatchCycle(db: Db): Promise<void> {
   const errText = await response.text().catch(() => `HTTP ${response.status}`);
   for (const e of successfulEntries) {
     await handleEntryFailureWithRetry(db, e, `Server error ${response.status}: ${errText}`);
+  }
+  if (jobId) {
+    await bsFailJob(db as SQLiteDatabase, jobId, `Server error ${response.status}`).catch(() => {});
   }
 }
 
@@ -539,15 +588,29 @@ function generateUUID(): string {
   });
 }
 
+/** T069: Reset failed outbox entries back to pending so they can be retried. */
+async function dbResetFailedToPending(db: Db): Promise<void> {
+  await db.runAsync(
+    `UPDATE sync_outbox SET status = 'pending', retry_count = 0, error_message = NULL
+     WHERE status = 'failed'`,
+  );
+}
+
 /** Serialise concurrent sync attempts — only one dispatch cycle runs at a time. */
 let syncInFlight = false;
 
 async function maybeTriggerSync(db: Db): Promise<void> {
   if (syncInFlight) return;
   syncInFlight = true;
+  cancelRequested = false; // reset at start of each triggered sync
   try {
     let retryCount = 0;
     while (retryCount < SYNC_RETRY_MAX_ATTEMPTS) {
+      // T070: honour cancellation between retry attempts
+      if (cancelRequested) {
+        console.info('[SyncService] Sync cancelled by operator.');
+        break;
+      }
       try {
         await runDispatchCycle(db);
         break;
@@ -597,8 +660,10 @@ export function initConnectivitySync(db: Db): () => void {
 }
 
 /**
- * Manually trigger a sync cycle (e.g. from a "Retry" button in the UI — T069).
+ * T069: Manually trigger a sync cycle from a "Retry" button.
+ * Resets failed outbox entries to pending before dispatching so they are included.
  */
 export async function triggerSync(db: Db): Promise<void> {
+  await dbResetFailedToPending(db);
   return maybeTriggerSync(db);
 }

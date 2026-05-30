@@ -17,11 +17,18 @@ export default function PersonnelListScreen() {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <Appbar.Action
-          icon="face-recognition"
-          accessibilityLabel="Verify personnel"
-          onPress={() => navigation.navigate('Verification')}
-        />
+        <>
+          <Appbar.Action
+            icon="cloud-upload-outline"
+            accessibilityLabel="Backup status"
+            onPress={() => navigation.navigate('BackupStatus')}
+          />
+          <Appbar.Action
+            icon="face-recognition"
+            accessibilityLabel="Verify personnel"
+            onPress={() => navigation.navigate('Verification')}
+          />
+        </>
       ),
     });
   }, [navigation]);

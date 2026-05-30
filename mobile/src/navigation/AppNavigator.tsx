@@ -1,11 +1,11 @@
 import React from 'react';
-import { View } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import PersonnelListScreen from '../screens/PersonnelListScreen';
 import PersonnelDetailScreen from '../screens/PersonnelDetailScreen';
 import VerificationScreen from '../screens/VerificationScreen';
+import BackupStatusScreen from '../screens/BackupStatusScreen';
 
 export type RootStackParamList = {
   PersonnelList: undefined;
@@ -15,10 +15,6 @@ export type RootStackParamList = {
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
-
-function PlaceholderScreen() {
-  return <View style={{ flex: 1 }} />;
-}
 
 export default function AppNavigator() {
   return (
@@ -44,7 +40,7 @@ export default function AppNavigator() {
           />
           <Stack.Screen
             name="BackupStatus"
-            component={PlaceholderScreen}
+            component={BackupStatusScreen}
             options={{ title: 'Backup Status' }}
           />
         </Stack.Navigator>

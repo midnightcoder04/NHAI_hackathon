@@ -247,7 +247,7 @@ async function handlePresign(
     body.images.map(async (img) => {
       const s3Key = `images/${body.deviceId}/${img.faceImageId}.jpg`;
       const uploadUrl = await getSignedUrl(
-        s3,
+        s3 as any,
         new PutObjectCommand({
           Bucket: BUCKET,
           Key: s3Key,
