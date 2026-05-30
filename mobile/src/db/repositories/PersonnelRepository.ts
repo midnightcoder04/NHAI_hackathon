@@ -2,6 +2,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import type { SQLiteBindValue } from 'expo-sqlite';
 import type { Personnel } from '../../models/Personnel';
 import { generateUUID } from '../../utils/uuid';
+import { useSyncOutboxRepository } from './SyncOutboxRepository';
 
 function rowToPersonnel(row: Record<string, unknown>): Personnel {
   return {
@@ -18,15 +19,29 @@ function rowToPersonnel(row: Record<string, unknown>): Personnel {
 
 export function usePersonnelRepository() {
   const db = useSQLiteContext();
+  const outbox = useSyncOutboxRepository();
 
   async function create(p: Omit<Personnel, 'id'>): Promise<Personnel> {
     const id = generateUUID();
-    await db.runAsync(
-      `INSERT INTO personnel (id, employee_id, full_name, role, registered_at, updated_at, sync_status, sync_error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, p.employeeId, p.fullName, p.role, p.registeredAt, p.updatedAt, p.syncStatus, p.syncError ?? null] as SQLiteBindValue[],
-    );
-    return { ...p, id };
+    const record: Personnel = { ...p, id };
+
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO personnel (id, employee_id, full_name, role, registered_at, updated_at, sync_status, sync_error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, p.employeeId, p.fullName, p.role, p.registeredAt, p.updatedAt, p.syncStatus, p.syncError ?? null] as SQLiteBindValue[],
+      );
+      await outbox.enqueue('personnel', id, {
+        id,
+        employeeId: p.employeeId,
+        fullName: p.fullName,
+        role: p.role,
+        registeredAt: p.registeredAt,
+        updatedAt: p.updatedAt,
+      });
+    });
+
+    return record;
   }
 
   async function update(
@@ -44,7 +59,33 @@ export function usePersonnelRepository() {
     if (fields.syncError !== undefined) { setClauses.push('sync_error = ?'); values.push(fields.syncError); }
 
     values.push(id);
-    await db.runAsync(`UPDATE personnel SET ${setClauses.join(', ')} WHERE id = ?`, values);
+
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(`UPDATE personnel SET ${setClauses.join(', ')} WHERE id = ?`, values);
+      // Only enqueue if this is a data change (not just a sync status update)
+      if (
+        fields.fullName !== undefined ||
+        fields.employeeId !== undefined ||
+        fields.role !== undefined
+      ) {
+        // Fetch the current record to build the full payload
+        const row = await db.getFirstAsync<Record<string, unknown>>(
+          'SELECT * FROM personnel WHERE id = ?',
+          [id],
+        );
+        if (row) {
+          const p = rowToPersonnel(row);
+          await outbox.enqueue('personnel', id, {
+            id,
+            employeeId: p.employeeId,
+            fullName: p.fullName,
+            role: p.role,
+            registeredAt: p.registeredAt,
+            updatedAt,
+          });
+        }
+      }
+    });
   }
 
   async function deleteById(id: string): Promise<void> {

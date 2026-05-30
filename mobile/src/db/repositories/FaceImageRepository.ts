@@ -2,6 +2,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import type { SQLiteBindValue } from 'expo-sqlite';
 import type { FaceImage } from '../../models/FaceImage';
 import { generateUUID } from '../../utils/uuid';
+import { useSyncOutboxRepository } from './SyncOutboxRepository';
 
 function embeddingToBlob(embedding: Float32Array | null): Uint8Array | null {
   if (!embedding) return null;
@@ -29,16 +30,29 @@ function rowToFaceImage(row: Record<string, unknown>): FaceImage {
 
 export function useFaceImageRepository() {
   const db = useSQLiteContext();
+  const outbox = useSyncOutboxRepository();
 
   async function create(fi: Omit<FaceImage, 'id'>): Promise<FaceImage> {
     const id = generateUUID();
     const embeddingBlob = embeddingToBlob(fi.embedding);
-    await db.runAsync(
-      `INSERT INTO face_image (id, personnel_id, image_path, embedding, s3_key, created_at, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, fi.personnelId, fi.imagePath, embeddingBlob, fi.s3Key ?? null, fi.createdAt, fi.syncStatus] as SQLiteBindValue[],
-    );
-    return { ...fi, id };
+    const record: FaceImage = { ...fi, id };
+
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO face_image (id, personnel_id, image_path, embedding, s3_key, created_at, sync_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [id, fi.personnelId, fi.imagePath, embeddingBlob, fi.s3Key ?? null, fi.createdAt, fi.syncStatus] as SQLiteBindValue[],
+      );
+      await outbox.enqueue('face_image', id, {
+        id,
+        personnelId: fi.personnelId,
+        imagePath: fi.imagePath,
+        s3Key: fi.s3Key ?? null,
+        createdAt: fi.createdAt,
+      });
+    });
+
+    return record;
   }
 
   async function findByPersonnelId(personnelId: string): Promise<FaceImage[]> {

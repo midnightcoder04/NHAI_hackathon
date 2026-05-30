@@ -2,6 +2,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import type { SQLiteBindValue } from 'expo-sqlite';
 import type { VerificationRecord } from '../../models/VerificationRecord';
 import { generateUUID } from '../../utils/uuid';
+import { useSyncOutboxRepository } from './SyncOutboxRepository';
 
 function rowToVerificationRecord(row: Record<string, unknown>): VerificationRecord {
   return {
@@ -19,26 +20,42 @@ function rowToVerificationRecord(row: Record<string, unknown>): VerificationReco
 
 export function useVerificationRepository() {
   const db = useSQLiteContext();
+  const outbox = useSyncOutboxRepository();
 
   async function create(vr: Omit<VerificationRecord, 'id'>): Promise<VerificationRecord> {
     const id = generateUUID();
-    await db.runAsync(
-      `INSERT INTO verification_record
-         (id, personnel_id_matched, initiated_at, completed_at, outcome, confidence_score, operator_context, device_id, sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+    const record: VerificationRecord = { ...vr, id };
+
+    await db.withTransactionAsync(async () => {
+      await db.runAsync(
+        `INSERT INTO verification_record
+           (id, personnel_id_matched, initiated_at, completed_at, outcome, confidence_score, operator_context, device_id, sync_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          vr.personnelIdMatched ?? null,
+          vr.initiatedAt,
+          vr.completedAt,
+          vr.outcome,
+          vr.confidenceScore ?? null,
+          vr.operatorContext ?? null,
+          vr.deviceId,
+          vr.syncStatus,
+        ] as SQLiteBindValue[],
+      );
+      await outbox.enqueue('verification_record', id, {
         id,
-        vr.personnelIdMatched ?? null,
-        vr.initiatedAt,
-        vr.completedAt,
-        vr.outcome,
-        vr.confidenceScore ?? null,
-        vr.operatorContext ?? null,
-        vr.deviceId,
-        vr.syncStatus,
-      ] as SQLiteBindValue[],
-    );
-    return { ...vr, id };
+        personnelIdMatched: vr.personnelIdMatched ?? null,
+        initiatedAt: vr.initiatedAt,
+        completedAt: vr.completedAt,
+        outcome: vr.outcome,
+        confidenceScore: vr.confidenceScore ?? null,
+        operatorContext: vr.operatorContext ?? null,
+        deviceId: vr.deviceId,
+      });
+    });
+
+    return record;
   }
 
   async function findAll(): Promise<VerificationRecord[]> {

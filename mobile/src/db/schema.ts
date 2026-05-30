@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS sync_outbox (
   dispatched_at    TEXT,
   status           TEXT NOT NULL DEFAULT 'pending'
                    CHECK(status IN ('pending','dispatched','acknowledged','failed')),
-  retry_count      INTEGER NOT NULL DEFAULT 0
+  retry_count      INTEGER NOT NULL DEFAULT 0,
+  error_message    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON sync_outbox(status);
 CREATE INDEX IF NOT EXISTS idx_outbox_record ON sync_outbox(record_type, record_id);
