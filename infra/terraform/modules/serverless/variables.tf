@@ -11,7 +11,7 @@ variable "account_id" {
 variable "lambda_source_dir" {
   type        = string
   description = "Absolute path to the Lambda source directory (will be zipped)"
-  default     = "../../lambda/sync-engine/dist"
+  default     = "../../infra/lambda/sync-engine/dist"
 }
 
 variable "db_host" {
