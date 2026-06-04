@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   ScrollView,
@@ -291,6 +292,9 @@ export default function PersonnelDetailScreen() {
           <View style={styles.cameraPlaceholder}>
             <Text>Camera permission required for photo capture.</Text>
             <Button onPress={requestPermission}>Grant Permission</Button>
+            {/* T075: if permission was permanently denied, Grant Permission no-ops —
+                deep-link the operator to the OS settings to enable it manually. */}
+            <Button onPress={() => Linking.openSettings()}>Open Settings</Button>
             <Button onPress={() => setCameraVisible(false)}>Close</Button>
           </View>
         )}

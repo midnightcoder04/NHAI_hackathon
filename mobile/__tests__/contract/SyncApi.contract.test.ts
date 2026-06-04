@@ -303,9 +303,7 @@ describe('Idempotency key format', () => {
   });
 
   it('actual SHA-256 of a sample string is valid', () => {
-    // SHA-256 of 'personnel:rec-001' = known hex output
-    const hash = 'a94a8fe5ccb19ba61c4c0873d391e987982fbbd3'; // SHA-1, just for test structure
-    // Use a known SHA-256 format (64 hex chars)
+    // A known SHA-256 format (64 hex chars).
     const sha256 = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824';
     expect(isSHA256Hex(sha256)).toBe(true);
     expect(sha256).toHaveLength(64);

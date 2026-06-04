@@ -11,6 +11,7 @@ jest.mock('@react-navigation/native', () => ({
   useNavigation: () => ({ navigate: jest.fn(), goBack: jest.fn() }),
   useFocusEffect: (cb: () => void) => {
     const React = require('react');
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mock: run the focus cb once
     React.useEffect(() => { cb(); }, []);
   },
 }));

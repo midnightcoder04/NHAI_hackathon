@@ -24,7 +24,8 @@ import {
   startJob as bsStartJob,
   completeJob as bsCompleteJob,
   failJob as bsFailJob,
-  cancelJob as bsCancelJob,
+  // cancelJob is invoked by BackupStatusScreen (which holds the job id); SyncService only
+  // sets the cancellation flag via requestCancel(), so it isn't imported here.
 } from './BackupStatusService';
 import {
   BATCH_MAX_PERSONNEL,
@@ -65,7 +66,10 @@ function getDeviceId(): string {
 async function hmacSha256(key: ArrayBuffer | Uint8Array, data: string): Promise<ArrayBuffer> {
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
-    key instanceof ArrayBuffer ? key : key.buffer,
+    // Pass the BufferSource directly — `.buffer` widens to ArrayBufferLike (possibly a
+    // SharedArrayBuffer) which importKey's overloads reject; an ArrayBuffer/Uint8Array
+    // is already a valid BufferSource (and avoids leaking a view's backing buffer).
+    key as BufferSource,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
@@ -317,9 +321,11 @@ async function presignImages(
         const uploadRes = await fetch(uploadUrl, {
           method: 'PUT',
           headers: { 'Content-Type': 'image/jpeg' },
-          body: await FileSystem.readAsStringAsync(imagePath, {
-            encoding: FileSystem.EncodingType.Base64,
-          }).then((b64) => Buffer.from(b64, 'base64')),
+          // expo-file-system SDK 55: the legacy readAsStringAsync/EncodingType are gone;
+          // read the raw bytes via the new File API (returns a Uint8Array) for the PUT body.
+          body: await new FileSystem.File(
+            imagePath.startsWith('file://') ? imagePath : `file://${imagePath}`,
+          ).bytes(),
         });
         if (!uploadRes.ok) {
           throw new Error(`S3 upload failed for ${faceImageId}: ${uploadRes.status}`);
@@ -511,7 +517,11 @@ export async function runDispatchCycle(db: Db): Promise<void> {
   if (response.status === 400) {
     // T052: Validation error — parse details and mark offending records failed
     const body = (await response.json()) as SyncBatchResponse400;
-    console.warn(`[SyncService] Batch validation error: ${body.message}`);
+    // T076: log the full field-level details so a schema mismatch is debuggable; only the
+    // offending records are marked failed below — healthy records stay pending for retry.
+    console.warn(
+      `[SyncService] Batch validation error: ${body.message}; details=${JSON.stringify(body.details)}`,
+    );
 
     // Build set of offending record IDs from detail field paths (e.g. "personnel[0].id")
     const offendingIds = new Set<string>();

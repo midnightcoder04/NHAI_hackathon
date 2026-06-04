@@ -109,7 +109,7 @@ describe('SyncService dispatch loop (T095, integration, real node:sqlite)', () =
   afterEach(() => db.closeSync());
 
   it('given_empty_outbox_when_runDispatchCycle_then_no_fetch_calls_made', async () => {
-    await runDispatchCycle(db as Parameters<typeof runDispatchCycle>[0]);
+    await runDispatchCycle(db as unknown as Parameters<typeof runDispatchCycle>[0]);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
@@ -140,7 +140,7 @@ describe('SyncService dispatch loop (T095, integration, real node:sqlite)', () =
       }),
     );
 
-    await runDispatchCycle(db as Parameters<typeof runDispatchCycle>[0]);
+    await runDispatchCycle(db as unknown as Parameters<typeof runDispatchCycle>[0]);
 
     const outboxRow = await db.getFirstAsync<Record<string, unknown>>(
       "SELECT * FROM sync_outbox WHERE id = 'outbox-200'",
@@ -179,7 +179,7 @@ describe('SyncService dispatch loop (T095, integration, real node:sqlite)', () =
       }),
     );
 
-    await runDispatchCycle(db as Parameters<typeof runDispatchCycle>[0]);
+    await runDispatchCycle(db as unknown as Parameters<typeof runDispatchCycle>[0]);
 
     const outboxRow = await db.getFirstAsync<Record<string, unknown>>(
       "SELECT * FROM sync_outbox WHERE id = 'outbox-409'",
@@ -214,7 +214,7 @@ describe('SyncService dispatch loop (T095, integration, real node:sqlite)', () =
       }),
     );
 
-    await runDispatchCycle(db as Parameters<typeof runDispatchCycle>[0]);
+    await runDispatchCycle(db as unknown as Parameters<typeof runDispatchCycle>[0]);
 
     const outboxRow = await db.getFirstAsync<Record<string, unknown>>(
       "SELECT * FROM sync_outbox WHERE id = 'outbox-400'",
@@ -245,7 +245,7 @@ describe('SyncService dispatch loop (T095, integration, real node:sqlite)', () =
 
     mockFetch.mockRejectedValueOnce(new Error('Network unreachable'));
 
-    await runDispatchCycle(db as Parameters<typeof runDispatchCycle>[0]);
+    await runDispatchCycle(db as unknown as Parameters<typeof runDispatchCycle>[0]);
 
     const outboxRow = await db.getFirstAsync<Record<string, unknown>>(
       "SELECT * FROM sync_outbox WHERE id = 'outbox-netfail'",
@@ -284,7 +284,7 @@ describe('SyncService dispatch loop (T095, integration, real node:sqlite)', () =
       }),
     );
 
-    await runDispatchCycle(db as Parameters<typeof runDispatchCycle>[0]);
+    await runDispatchCycle(db as unknown as Parameters<typeof runDispatchCycle>[0]);
 
     for (const pid of ids) {
       const row = await db.getFirstAsync<Record<string, unknown>>(
@@ -307,7 +307,7 @@ describe('SyncService dispatch loop (T095, integration, real node:sqlite)', () =
 
     mockGetCredentials.mockRejectedValueOnce(new Error('Cognito unavailable'));
 
-    await runDispatchCycle(db as Parameters<typeof runDispatchCycle>[0]);
+    await runDispatchCycle(db as unknown as Parameters<typeof runDispatchCycle>[0]);
 
     // Fetch should NOT have been called since credentials failed
     expect(mockFetch).not.toHaveBeenCalled();

@@ -5,6 +5,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { PaperProvider } from 'react-native-paper';
 import { runMigrations } from './src/db/migrations';
 import AppNavigator from './src/navigation/AppNavigator';
+import { theme } from './src/components/theme';
 
 function LoadingScreen() {
   return (
@@ -19,7 +20,7 @@ export default function App() {
   return (
     <Suspense fallback={<LoadingScreen />}>
       <SQLiteProvider databaseName="nhai.db" onInit={runMigrations} useSuspense>
-        <PaperProvider>
+        <PaperProvider theme={theme}>
           <StatusBar style="auto" />
           <AppNavigator />
         </PaperProvider>

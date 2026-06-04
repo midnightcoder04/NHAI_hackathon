@@ -183,3 +183,35 @@ aws lambda update-function-code \
 | SQS messages stuck in DLQ | Check Lambda CloudWatch logs; common causes: RDS connection timeout, schema mismatch |
 | Face matching always returns "no match" | Verify embeddings are stored (not null) in `face_image` table; re-register personnel if embeddings are missing |
 | S3 pre-signed URL expired | Pre-signed URLs valid 15 min; retry the image upload flow |
+
+---
+
+## Local AWS (LocalStack)
+
+Exercise the sync engine (SQS + S3) locally with no AWS account, via the LocalStack
+service in `infra/docker-compose.yml` (T079).
+
+```bash
+# 1. Start LocalStack (edge endpoint http://localhost:4566). The ready.d bootstrap
+#    (infra/localstack/init/01-bootstrap.sh) creates the FIFO queue + DLQ + S3 bucket.
+docker compose -f infra/docker-compose.yml up -d
+
+# 2. Point AWS tooling / awslocal at it and confirm the resources exist
+awslocal sqs list-queues          # → nhai-sync-queue.fifo, nhai-sync-dlq.fifo
+awslocal s3 ls                     # → s3://nhai-face-images-local
+
+# 3. Run the Lambda sync engine against LocalStack (override the AWS endpoint)
+cd infra/lambda/sync-engine && pnpm build
+AWS_ENDPOINT_URL=http://localhost:4566 \
+AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+  node dist/handler.js   # or invoke via your integration test harness
+
+# 4. Tear down
+docker compose -f infra/docker-compose.yml down
+```
+
+Notes:
+- The mobile `SyncService` can target LocalStack by setting `AWS_API_GATEWAY_URL` to a
+  local API Gateway emulator or by stubbing the endpoint in integration tests; for the
+  Lambda↔SQS↔S3 path, LocalStack alone is sufficient.
+- `PERSISTENCE=0` keeps state ephemeral — every `up` starts clean.

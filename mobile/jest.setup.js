@@ -15,6 +15,23 @@ jest.mock('expo-crypto', () => {
     CryptoDigestAlgorithm: { SHA256: 'SHA-256' },
     digestStringAsync: async (_algorithm, data) =>
       nodeCrypto.createHash('sha256').update(String(data)).digest('hex'),
+    // T073: CryptoService uses secure random for AES keys/nonces.
+    getRandomBytes: (n) => new Uint8Array(nodeCrypto.randomBytes(n)),
+  };
+});
+
+// T073: expo-secure-store → an in-memory keystore so CryptoService can get-or-create its
+// device key under jest (the real keystore is native).
+jest.mock('expo-secure-store', () => {
+  const store = {};
+  return {
+    getItemAsync: async (k) => (k in store ? store[k] : null),
+    setItemAsync: async (k, v) => {
+      store[k] = v;
+    },
+    deleteItemAsync: async (k) => {
+      delete store[k];
+    },
   };
 });
 

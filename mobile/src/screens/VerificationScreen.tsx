@@ -16,6 +16,7 @@ import {
   type LivenessResult,
 } from '../ml/LivenessDetector';
 import { EmbeddingModel } from '../ml/EmbeddingModel';
+import { useDelayedFlag } from '../components/useDelayedFlag';
 import { LIVENESS_CAPTURE_WINDOW_MS, LIVENESS_CAPTURE_POLL_MS, EMBEDDING_DIM } from '../constants';
 import type { BoxedTfliteModel } from '../ml/tfliteRuntime';
 import type { DetectedFace } from '../services/VerificationService';
@@ -57,6 +58,7 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
   const [result, setResult] = useState<VerificationRecord | null>(null);
   const [matched, setMatched] = useState<Personnel | null>(null);
   const [snackMsg, setSnackMsg] = useState('');
+  const showCapturingSpinner = useDelayedFlag(phase === 'capturing');
 
   // Load the boxed models. BlazeFace is required (detection + the live overlay); the
   // FaceMesh (active blink) and Antispoof (passive texture) models back the two liveness
@@ -227,7 +229,11 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
 
       <View style={styles.controls}>
         {phase === 'capturing' ? (
-          <ActivityIndicator animating size="large" color="white" accessibilityLabel="Verifying" />
+          // 200ms feedback rule (T078): only show the spinner once capture runs long
+          // enough to need it, so an early-exit verdict doesn't flash it.
+          showCapturingSpinner ? (
+            <ActivityIndicator animating size="large" color="white" accessibilityLabel="Verifying" />
+          ) : null
         ) : (
           <Button
             mode="contained"

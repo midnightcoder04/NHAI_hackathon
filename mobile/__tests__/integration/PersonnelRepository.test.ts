@@ -54,15 +54,36 @@ describe('PersonnelRepository (integration, real node:sqlite)', () => {
     expect(await repo.findById(p.id)).toBeNull();
   });
 
-  it('given_personnel_with_face_image_when_delete_then_cascades', async () => {
+  it('given_synced_personnel_with_face_image_when_delete_then_hard_deletes_and_cascades', async () => {
     const personnel = usePersonnelRepository();
     const faces = useFaceImageRepository();
     const p = await personnel.create(buildPersonnelInput());
     await faces.create(buildFaceImageInput(p.id));
+    await personnel.update(p.id, { syncStatus: 'synced' }); // synced + no in-flight ⇒ safe to hard-delete
 
     expect((await faces.findByPersonnelId(p.id)).length).toBe(1);
     await personnel.delete(p.id);
     expect((await faces.findByPersonnelId(p.id)).length).toBe(0);
+  });
+
+  it('given_unsynced_personnel_when_delete_then_tombstoned_hidden_but_not_removed', async () => {
+    const personnel = usePersonnelRepository();
+    const faces = useFaceImageRepository();
+    const p = await personnel.create(buildPersonnelInput()); // sync_status defaults to 'pending'
+    await faces.create(buildFaceImageInput(p.id));
+
+    await personnel.delete(p.id);
+
+    // Hidden from the app (findById/findAll filter tombstoned)…
+    expect(await personnel.findById(p.id)).toBeNull();
+    expect((await personnel.findAll()).some((x) => x.id === p.id)).toBe(false);
+    // …but the row is tombstoned (not removed) and its face image is NOT cascaded away.
+    const raw = await db.getFirstAsync<{ tombstoned: number }>(
+      'SELECT tombstoned FROM personnel WHERE id = ?',
+      [p.id],
+    );
+    expect(raw?.tombstoned).toBe(1);
+    expect((await faces.findByPersonnelId(p.id)).length).toBe(1);
   });
 
   it('given_duplicate_employeeId_when_create_then_rejects_unique_violation', async () => {

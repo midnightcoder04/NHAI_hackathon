@@ -87,6 +87,9 @@ describe('VerificationRepository (integration, real node:sqlite)', () => {
     const p = await personnel.create(buildPersonnelInput());
     await repo.create(buildVerificationInput({ outcome: 'authorized', personnelIdMatched: p.id }));
 
+    // Mark synced so delete hard-deletes (T077 tombstones an unsynced record instead),
+    // exercising the FK ON DELETE SET NULL on the verification row.
+    await personnel.update(p.id, { syncStatus: 'synced' });
     await personnel.delete(p.id);
     const all = await repo.findAll();
     expect(all[0].personnelIdMatched).toBeUndefined();
