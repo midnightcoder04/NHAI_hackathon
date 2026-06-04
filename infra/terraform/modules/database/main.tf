@@ -74,7 +74,7 @@ resource "aws_db_instance" "main" {
   engine_version          = "15"
   instance_class          = var.db_instance_class
   allocated_storage       = var.db_allocated_storage
-  storage_type            = "gp3"
+  storage_type            = "gp2"
   storage_encrypted       = true
 
   db_name  = var.db_name
@@ -88,10 +88,10 @@ resource "aws_db_instance" "main" {
   publicly_accessible    = false
   skip_final_snapshot    = true   # set to false for production
   deletion_protection    = false  # set to true for production
-  backup_retention_period = 7
+  backup_retention_period = 0
 
-  # Performance Insights for query diagnostics (free tier)
-  performance_insights_enabled = true
+  # Performance Insights for query diagnostics (not available in free tier)
+  performance_insights_enabled = false
 
   tags = { Name = "nhai-postgres" }
 }
