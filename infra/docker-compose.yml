@@ -1,0 +1,19 @@
+# T079: LocalStack — a local AWS for exercising the sync engine (SQS + S3) without a
+# real account. Brings up the FIFO queue + DLQ + face-images bucket the Lambda expects
+# (see infra/localstack/init/01-bootstrap.sh). Endpoint: http://localhost:4566.
+# Usage: `docker compose -f infra/docker-compose.yml up` — see quickstart.md.
+services:
+  localstack:
+    image: localstack/localstack:3
+    container_name: nhai-localstack
+    ports:
+      - "4566:4566" # edge port: SQS + S3 are multiplexed here
+    environment:
+      - SERVICES=sqs,s3
+      - AWS_DEFAULT_REGION=us-east-1
+      - PERSISTENCE=0 # ephemeral — fresh state each run
+      - DEBUG=0
+    volumes:
+      # ready.d scripts run once LocalStack is healthy (creates queues + bucket)
+      - "./localstack/init:/etc/localstack/init/ready.d"
+      - "/var/run/docker.sock:/var/run/docker.sock"

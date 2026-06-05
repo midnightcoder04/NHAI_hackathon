@@ -1,0 +1,136 @@
+# T103 — Continuous Integration: enforces all Constitution Quality Gates.
+#
+# Mobile gate (the primary one): pnpm install → lint (zero violations) → typecheck →
+# jest with coverage gate (≥80% line / ≥70% branch, enforced by jest `coverageThreshold`
+# in mobile/package.json) → contract tests → performance benchmarks.
+# Lambda gate: typecheck → jest with coverage.
+# Terraform gate: fmt check → validate (no AWS credentials / no remote state needed).
+#
+# Coverage thresholds are NOT duplicated here — they live in each package's jest config so
+# `pnpm test` fails locally and in CI identically (single source of truth).
+
+name: CI
+
+on:
+  push:
+    branches: [main, '001-offline-facial-recognition']
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # node:sqlite (DatabaseSync) backs the integration test DB (mobile/__tests__/helpers/testDb.ts)
+  # and is only available unflagged on Node 24+. pnpm version matches packageManager fields.
+  NODE_VERSION: '24'
+  PNPM_VERSION: '10.33.0'
+
+jobs:
+  mobile:
+    name: Mobile — lint · typecheck · test · coverage · contract · perf
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      # Install the whole pnpm workspace once (mobile + lambda) from the repo root so the
+      # lockfile is respected and node_modules are linked from the store.
+      - name: Install dependencies (workspace, frozen lockfile)
+        working-directory: ${{ github.workspace }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (zero violations)
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      # Coverage gate is enforced inside jest via coverageThreshold in package.json
+      # (≥80% lines / ≥70% branches). Runs unit + integration + contract suites.
+      - name: Unit + integration + contract tests with coverage gate
+        run: pnpm run test:cov
+
+      # Constitution III: contract tests must pass before integration/E2E. They already run
+      # inside the coverage step above; this re-asserts them in isolation for a clear signal.
+      - name: Contract tests (isolated)
+        run: pnpm run test:contract
+
+      # T100/T101 — per-stage inference budget + SC-002/SC-005 throughput benchmarks.
+      # Asserts absolute budgets and fails on a >20% regression vs the recorded baseline.
+      - name: Performance benchmarks (SC-002 latency / SC-005 throughput)
+        run: pnpm run test:perf
+
+  lambda:
+    name: Sync Engine (Lambda) — typecheck · test · coverage
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/lambda/sync-engine
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies (workspace, frozen lockfile)
+        working-directory: ${{ github.workspace }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Unit tests with coverage
+        run: pnpm run test:coverage
+
+  terraform:
+    name: Terraform — fmt · validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+
+      # Non-blocking: surfaces formatting drift without failing the build (canonical
+      # formatting is enforced by `terraform fmt` in pre-commit, not as a hard CI gate).
+      - name: Format check
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      # -backend=false skips the S3 remote-state backend so validate needs no AWS creds.
+      - name: Init (no backend)
+        run: terraform init -backend=false
+
+      - name: Validate
+        run: terraform validate

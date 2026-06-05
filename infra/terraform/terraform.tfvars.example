@@ -1,0 +1,16 @@
+# Copy this file to terraform.tfvars and fill in the values.
+# NEVER commit terraform.tfvars to source control (it contains secrets).
+
+# AWS region to deploy all resources into
+aws_region = "ap-south-1"
+
+# Your 12-digit AWS account ID (used in IAM resource ARNs and S3 bucket name)
+account_id = "<your-aws-account-id>"
+
+# Strong password for the RDS PostgreSQL master user.
+# Min 8 characters; avoid @, ", /, or whitespace.
+db_password = "<strong-random-password>"
+
+# Optional: URL to receive sync.batch.completed webhook events (FR-017).
+# Leave empty to disable.
+webhook_url = ""

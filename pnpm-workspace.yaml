@@ -1,0 +1,11 @@
+packages:
+  - mobile
+  - infra/lambda/sync-engine
+
+# Expo's optional peer "@expo/dom-webview" is specified as "*", which lets
+# autoInstallPeers pull the latest (SDK 56) version into an SDK 55 project.
+# Its native DomWebViewModule then references expo-modules-core@56's
+# AnyTypeCache class, which is absent in expo-modules-core@55 -> NoClassDefFoundError
+# native crash at startup. Pin it to the SDK 55 line.
+overrides:
+  '@expo/dom-webview': 55.0.6
