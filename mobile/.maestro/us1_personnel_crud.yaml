@@ -1,0 +1,50 @@
+# T105 (a) — US1 end-to-end: register → list → edit → delete.
+#
+# Fully automatable with no camera dependency: the optional photo step is skipped so the
+# flow is deterministic in CI (a record saves without a photo; recognition just won't
+# match, which US1 does not exercise).
+#
+# Run locally:  maestro test mobile/.maestro/us1_personnel_crud.yaml
+# App id matches android/app build.gradle applicationId.
+appId: com.anonymous.nhaifieldops
+---
+- launchApp:
+    clearState: true # start from an empty roster for a deterministic assertion
+
+# --- CREATE -----------------------------------------------------------------
+- assertVisible: "No personnel registered yet."
+- tapOn: "Register personnel" # the FAB (accessibilityLabel)
+- assertVisible: "Full Name"
+- tapOn: "Full Name"
+- inputText: "E2E Test User"
+- tapOn: "Employee ID"
+- inputText: "E2E-1001"
+- tapOn: "Role"
+- inputText: "Inspector"
+- hideKeyboard
+- tapOn: "Register Personnel"
+
+# Back on the list — the new record is shown with its id · role subtitle.
+- assertVisible: "E2E Test User"
+- assertVisible: "E2E-1001 · Inspector"
+
+# --- EDIT -------------------------------------------------------------------
+- tapOn: "E2E Test User"
+- assertVisible: "Save Changes" # edit mode (vs "Register Personnel")
+- tapOn: "Role"
+- eraseText: 20
+- inputText: "Supervisor"
+- hideKeyboard
+- tapOn: "Save Changes"
+- assertVisible: "E2E-1001 · Supervisor" # subtitle reflects the edit
+
+# --- DELETE -----------------------------------------------------------------
+- tapOn: "E2E Test User"
+- tapOn: "Delete" # the screen's destructive button → opens the confirm dialog
+- assertVisible: "This will permanently delete this record and all associated photos."
+# The confirm dialog's own "Delete" action (index 1; index 0 is the screen button behind it).
+- tapOn:
+    text: "Delete"
+    index: 1
+- assertNotVisible: "E2E Test User"
+- assertVisible: "No personnel registered yet."

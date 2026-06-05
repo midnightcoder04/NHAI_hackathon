@@ -25,7 +25,7 @@ MODEL = REPO / "models" / "face_landmarks_detector_float16.tflite"
 SIZE = 256
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from test_blazeface import make_detector as make_face_detector  # noqa: E402
+from test_blazeface_f16 import make_detector as make_face_detector  # noqa: E402
 
 
 def make_landmarker():

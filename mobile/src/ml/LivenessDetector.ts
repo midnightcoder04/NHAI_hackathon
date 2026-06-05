@@ -92,6 +92,22 @@ export function fuseLiveness(blinkDetected: boolean, realProbability: number): L
 const mean = (xs: number[]): number => (xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length);
 
 /**
+ * Robust central estimate of the antispoof real-probability across a window. The
+ * per-frame antispoof score is noisy (crop jitter + auto-exposure make a *still* face
+ * wobble frame-to-frame — the exact symptom seen in test_liveness.py), so a plain mean
+ * can be yanked around by one or two outlier frames. With ≥4 samples we drop the single
+ * lowest AND highest and average the rest (a trimmed mean), which shrugs off transient
+ * spikes in either direction while still reflecting a genuinely live/spoof plateau. With
+ * fewer samples there's nothing safe to trim, so we fall back to the plain mean.
+ */
+export function aggregateRealProb(realProbs: readonly number[]): number {
+  if (realProbs.length === 0) return 0;
+  if (realProbs.length < 4) return mean([...realProbs]);
+  const sorted = [...realProbs].sort((a, b) => a - b);
+  return mean(sorted.slice(1, sorted.length - 1));
+}
+
+/**
  * Passive-only liveness verdict from the Antispoof texture classifier alone — the
  * least-compute liveness layer (a single ~30 ms INT8 model, no multi-frame blink /
  * FaceMesh). `live` iff the mean real-probability across the captured frames clears
@@ -183,24 +199,74 @@ export function reduceCapture(
   samples: readonly CaptureFrameSample[],
   opts: ReduceCaptureOptions = {},
 ): LivenessResult {
+  return reduceCaptureDetailed(samples, opts).result;
+}
+
+/**
+ * Why a capture window resolved the way it did — so the UI can show the operator the
+ * SPECIFIC failing layer (production wording: "Potential Spoof" / "Movement Not
+ * Detected" / "Face Not Detected") instead of a generic "liveness failed". `live` is the
+ * pass; the rest each name one failed gate, in the same precedence `reduceCaptureDetailed`
+ * applies.
+ */
+export type LivenessReason = 'live' | 'spoof' | 'no_movement' | 'no_face';
+
+export interface DetailedLiveness {
+  result: LivenessResult;
+  reason: LivenessReason;
+}
+
+/**
+ * Same fusion as `reduceCapture`, but returns the reason alongside the verdict.
+ * Precedence (each maps to one operator-facing message):
+ *   - too little continuous face presence ⇒ inconclusive / `no_face`
+ *   - passive antispoof (trimmed-mean real-prob) below threshold ⇒ spoof / `spoof`
+ *   - no active signal (neither movement nor blink) ⇒ inconclusive / `no_movement`
+ *   - otherwise ⇒ live / `live`
+ * The passive layer uses `aggregateRealProb` (trimmed mean) rather than a plain mean so
+ * a couple of jittery frames can't flip a genuinely-live plateau into a false spoof.
+ */
+export function reduceCaptureDetailed(
+  samples: readonly CaptureFrameSample[],
+  opts: ReduceCaptureOptions = {},
+): DetailedLiveness {
   const blinkFrames = opts.blinkFrames ?? LIVENESS_BLINK_FRAMES;
   const minPresence = opts.minPresenceRatio ?? LIVENESS_MIN_PRESENCE_RATIO;
   const minFaceFrames = opts.minFaceFrames ?? LIVENESS_MIN_FACE_FRAMES;
   const moveThreshold = opts.moveRatioThreshold ?? LIVENESS_MOVE_RATIO_THRESHOLD;
-  if (samples.length === 0) return 'inconclusive';
+  if (samples.length === 0) return { result: 'inconclusive', reason: 'no_face' };
 
   const present = samples.filter((s) => s.facePresent).length;
-  if (present < minFaceFrames || present / samples.length < minPresence) return 'inconclusive';
+  if (present < minFaceFrames || present / samples.length < minPresence) {
+    return { result: 'inconclusive', reason: 'no_face' };
+  }
 
   // Passive gate dominates: a low real-probability is a spoof no matter how it moved.
   const realProbs = samples.map((s) => s.realProb).filter((p): p is number => p !== null);
-  if (realProbs.length > 0 && mean(realProbs) < LIVENESS_ANTISPOOF_REAL_THRESHOLD) return 'spoof';
+  if (realProbs.length > 0 && aggregateRealProb(realProbs) < LIVENESS_ANTISPOOF_REAL_THRESHOLD) {
+    return { result: 'spoof', reason: 'spoof' };
+  }
 
   // Active: movement (primary) OR blink (bonus, when EAR present).
   const moved = faceMovement(samples) >= moveThreshold;
   const earSeries = samples.map((s) => s.ear).filter((e): e is number => e !== null);
   const blink = earSeries.length >= blinkFrames && detectBlink(earSeries, blinkFrames);
-  return moved || blink ? 'live' : 'inconclusive';
+  if (moved || blink) return { result: 'live', reason: 'live' };
+  return { result: 'inconclusive', reason: 'no_movement' };
+}
+
+/**
+ * Passive-only verdict for the Phase-3 execution burst, where the ACTIVE check (blink /
+ * movement) has ALREADY passed in Phase 2 — so all that's left is the antispoof texture
+ * gate. Aggregates the burst's real-probabilities with `aggregateRealProb` (trimmed mean,
+ * so one jittery frame can't flip a genuinely-live result) and compares to the threshold.
+ * No usable frames ⇒ inconclusive/`no_face`; below threshold ⇒ spoof; otherwise live.
+ */
+export function passiveLivenessDetailed(realProbs: readonly number[]): DetailedLiveness {
+  if (realProbs.length === 0) return { result: 'inconclusive', reason: 'no_face' };
+  return aggregateRealProb(realProbs) >= LIVENESS_ANTISPOOF_REAL_THRESHOLD
+    ? { result: 'live', reason: 'live' }
+    : { result: 'spoof', reason: 'spoof' };
 }
 
 /**
@@ -249,7 +315,10 @@ export const LivenessDetector = {
   fuseLiveness,
   passiveLiveness,
   faceMovement,
+  aggregateRealProb,
   reduceCapture,
+  reduceCaptureDetailed,
+  passiveLivenessDetailed,
   check,
   extractEyeLandmarks,
 };

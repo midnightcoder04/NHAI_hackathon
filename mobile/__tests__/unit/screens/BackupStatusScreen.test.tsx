@@ -20,6 +20,7 @@ jest.mock('@react-navigation/native', () => ({
 
 const mockGetStatus = jest.fn();
 const mockCancelJob = jest.fn();
+const mockCompleteBackupNow = jest.fn().mockResolvedValue(0);
 jest.mock('../../../src/services/BackupStatusService', () => ({
   useBackupStatusService: () => ({
     getStatus: mockGetStatus,
@@ -27,6 +28,7 @@ jest.mock('../../../src/services/BackupStatusService', () => ({
     completeJob: jest.fn(),
     failJob: jest.fn(),
     cancelJob: mockCancelJob,
+    completeBackupNow: mockCompleteBackupNow,
   }),
 }));
 
@@ -47,6 +49,21 @@ const mockRequestCancel = jest.requireMock('../../../src/services/SyncService')
 
 jest.mock('expo-sqlite', () => ({
   useSQLiteContext: () => ({}),
+}));
+
+// ---- NetInfo mock -----------------------------------------------------------
+// Connectivity gates the screen: online → "Successful sync"; offline → the queued/
+// pending detail (retry/cancel). Default OFFLINE so the detail-UI tests below render it.
+let mockIsConnected = false;
+jest.mock('@react-native-community/netinfo', () => ({
+  __esModule: true,
+  default: {
+    addEventListener: (cb: (s: { isConnected: boolean }) => void) => {
+      cb({ isConnected: mockIsConnected });
+      return () => {};
+    },
+    fetch: async () => ({ isConnected: mockIsConnected }),
+  },
 }));
 
 // ---- helpers ----------------------------------------------------------------
@@ -85,6 +102,16 @@ describe('BackupStatusScreen', () => {
     mockTriggerSync.mockReset();
     mockRequestCancel.mockReset();
     mockCancelJob.mockReset();
+    mockIsConnected = false; // default offline → detail UI; the online test opts in
+  });
+
+  it('given_online_then_shows_successful_sync', async () => {
+    mockIsConnected = true;
+    mockGetStatus.mockResolvedValue(statusOf(baseJob({ status: 'failed', errorMessage: 'Timeout' })));
+    renderScreen();
+    // Online demo state hides the queued detail and shows success regardless of job state.
+    expect(await screen.findByText('Successful sync')).toBeTruthy();
+    expect(screen.queryByText(/retry/i)).toBeNull();
   });
 
   it('given_status_failed_when_rendered_then_retry_button_is_visible', async () => {

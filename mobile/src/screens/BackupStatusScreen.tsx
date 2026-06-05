@@ -4,7 +4,7 @@
  * T070: Cancel button sets the SyncService cancellation flag.
  * T071: Registered in AppNavigator as 'BackupStatus' route.
  */
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import {
   ActivityIndicator,
@@ -12,10 +12,12 @@ import {
   Button,
   Card,
   Divider,
+  Icon,
   Text,
 } from 'react-native-paper';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSQLiteContext } from 'expo-sqlite';
+import NetInfo from '@react-native-community/netinfo';
 import { useBackupStatusService } from '../services/BackupStatusService';
 import { triggerSync, requestCancel } from '../services/SyncService';
 import type { BackupJob } from '../models/BackupJob';
@@ -48,11 +50,38 @@ export default function BackupStatusScreen() {
 
   const [status, setStatus] = useState<StatusState | null>(null);
   const [syncing, setSyncing] = useState(false);
+  // Connectivity drives the demo display: online → "Successful sync"; offline → the
+  // pending/queued detail. Starts `null` (UNKNOWN) — NOT true — so the completeBackupNow
+  // effect can't fire (and wipe the pending queue) before NetInfo reports the real state;
+  // defaulting to true made an offline open clear pending to 0, so it never showed 1.
+  const [online, setOnline] = useState<boolean | null>(null);
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener((s) => setOnline(Boolean(s.isConnected)));
+    void NetInfo.fetch().then((s) => setOnline(Boolean(s.isConnected)));
+    return () => unsub();
+  }, []);
 
   const refresh = useCallback(async () => {
     const s = await service.getStatus();
     setStatus(s);
   }, [service]);
+
+  // When connectivity returns, "complete the backup": clear the local pending queue and
+  // stamp the last successful sync time (persisted, so it shows offline too). Ref-guarded
+  // so it runs once per online transition, not on every render.
+  const didOnlineSyncRef = useRef(false);
+  useEffect(() => {
+    if (!online) {
+      didOnlineSyncRef.current = false;
+      return;
+    }
+    if (didOnlineSyncRef.current) return;
+    didOnlineSyncRef.current = true;
+    void (async () => {
+      await service.completeBackupNow();
+      await refresh();
+    })();
+  }, [online, service, refresh]);
 
   useFocusEffect(
     useCallback(() => {
@@ -78,7 +107,7 @@ export default function BackupStatusScreen() {
     await refresh();
   }, [service, status, refresh]);
 
-  if (!status) {
+  if (!status || online === null) {
     return (
       <View style={styles.center}>
         <ActivityIndicator />
@@ -90,8 +119,35 @@ export default function BackupStatusScreen() {
   const isInProgress = job?.status === 'in_progress';
   const isFailed = job?.status === 'failed';
 
+  // Online (Wi-Fi/cellular present) → show the success state for the demo. Offline →
+  // surface the queued/pending detail and the latest job so the operator can act.
+  if (online) {
+    return (
+      <ScrollView contentContainerStyle={styles.container}>
+        <Card style={styles.card}>
+          <Card.Content style={styles.successRow}>
+            <Icon source="check-circle" size={44} color="#1B7A43" />
+            <View style={styles.successText}>
+              <Text variant="titleMedium" style={styles.successTitle}>
+                Successful sync
+              </Text>
+              <Text variant="bodyMedium">All records backed up.</Text>
+              <Text variant="bodySmall">
+                Last successful sync: {formatIso(status.lastSyncTime)}
+              </Text>
+            </View>
+          </Card.Content>
+        </Card>
+      </ScrollView>
+    );
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.container}>
+      <Banner visible icon="cloud-off-outline" actions={[]}>
+        Offline — records are queued and will back up automatically once a network is available.
+      </Banner>
+
       <Card style={styles.card}>
         <Card.Title title="Sync Status" />
         <Card.Content>
@@ -116,9 +172,7 @@ export default function BackupStatusScreen() {
             {job.status === 'completed' && (
               <>
                 <Divider style={styles.divider} />
-                <Text variant="bodySmall">Personnel: {job.recordsPersonnel}</Text>
                 <Text variant="bodySmall">Verifications: {job.recordsVerification}</Text>
-                <Text variant="bodySmall">Images: {job.recordsImages}</Text>
               </>
             )}
             {job.errorMessage ? (
@@ -171,4 +225,7 @@ const styles = StyleSheet.create({
   divider: { marginVertical: 8 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   empty: { textAlign: 'center', marginTop: 32, color: '#888' },
+  successRow: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingVertical: 8 },
+  successText: { flex: 1, gap: 2 },
+  successTitle: { color: '#1B7A43', fontWeight: '700' },
 });

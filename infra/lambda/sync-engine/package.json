@@ -5,6 +5,7 @@
   "main": "dist/handler.js",
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:coverage": "jest --coverage"
   },

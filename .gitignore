@@ -64,3 +64,8 @@ coverage/
 
 # Claude Code runtime artifacts
 .claude/scheduled_tasks.lock
+
+# Local evaluation datasets (real PAD capture set — not source; ~6k images)
+LiveSpoofDataset/
+# Regenerable model-conversion artifact (scripts/make_fp16.py)
+models/*_float16_sim.tflite

@@ -10,8 +10,7 @@ import {
   BLAZEFACE_SCORE_THRESHOLD,
   BLAZEFACE_BOX_PAD_Y,
   ANTISPOOF_INPUT_SIZE,
-  ANTISPOOF_MEAN,
-  ANTISPOOF_STD,
+  ANTISPOOF_CROP_SCALE,
   FACEMESH_INPUT_SIZE,
   EMBEDDING_INPUT_SIZE,
 } from '../constants';
@@ -156,18 +155,26 @@ export interface VerificationFrameSample {
   embedding: number[] | null;
 }
 
+/** Which models the worklet runs this frame — the screen's three-phase pipeline:
+ *  - `detect`  (Phase 1): BlazeFace only. Cheap, runs continuously while searching.
+ *  - `interact` (Phase 2): BlazeFace + FaceMesh (EAR) only, for the "blink to verify"
+ *    wait. Still lightweight — no antispoof/embedding while we wait for a human.
+ *  - `execute` (Phase 3): BlazeFace + Antispoof + MobileFaceNet, the one-shot burst
+ *    fired the instant the blink (or movement fallback) is confirmed. No FaceMesh —
+ *    the active check already passed; this is the <1 s passive + identity step.
+ */
+export type FrameMode = 'detect' | 'interact' | 'execute';
+
 /**
- * Verification frame output: detection every frame (cheap, for the live overlay)
- * plus — only while `sampleLiveness` is true (the "Start Verification" window) — BOTH
- * liveness layers on the **same** frame's face ROI: the ACTIVE blink layer (FaceMesh
- * f16 → eye-aspect-ratio) and the PASSIVE texture layer (Antispoof INT8).
+ * Verification frame output: BlazeFace detection EVERY frame (cheap, drives the loop +
+ * the live overlay), and — gated by `mode` — the heavier models on the SAME frame's face
+ * ROI. FaceMesh (EAR) runs only in `interact`; Antispoof (passive texture) and
+ * MobileFaceNet (identity embedding) run only in `execute`.
  *
- * Running the heavy stack only during the ~1 s capture window keeps idle cost at
- * ~detection, and binding every model to the same pixel buffer as detection (and,
- * later, MobileFaceNet embedding — T099) closes the time-of-check/time-of-use spoofing
- * gap: the frame proven live is the frame identity is read from. The continuous-
- * presence gate that ties the whole window into one presentation lives in
- * `LivenessDetector.reduceCapture`.
+ * Staging the models this way keeps idle/searching cost at ~detection and the blink-wait
+ * at ~detection+FaceMesh, while still binding antispoof + embedding to the SAME pixel
+ * buffer as detection — closing the time-of-check/time-of-use spoofing gap: the frame
+ * proven live (antispoof) is the frame identity is read from.
  *
  * The single-best-anchor decode, ROI crops, FaceMesh EAR, and antispoof normalise+
  * softmax are inlined here (worklet thread) but mirror the unit-tested pure helpers
@@ -176,31 +183,24 @@ export interface VerificationFrameSample {
  */
 export function useVerificationFrameOutput(
   models: VerificationModels,
-  sampleLiveness: boolean,
+  mode: FrameMode,
   onSample: (sample: VerificationFrameSample) => void,
 ): CameraFrameOutput {
   const detBoxed = models.detector?.boxed ?? null;
-  // FaceMesh (blink) is intentionally NOT loaded for verification anymore — active
-  // liveness is the cheap, fast-sampling MOVEMENT signal (LivenessDetector.faceMovement)
-  // computed JS-side from the detection box. lmBoxed stays null so the FaceMesh block
-  // below is skipped, keeping the per-frame cost low (detection + antispoof + embedding).
   const lmBoxed = models.landmarks?.boxed ?? null;
   const asBoxed = models.antispoof?.boxed ?? null;
   const emBoxed = models.embedder?.boxed ?? null;
-  const runLiveness = sampleLiveness;
+  // FaceMesh/EAR runs only in the blink-wait phase; antispoof + embedding only in the
+  // one-shot execution burst after the active check passes.
+  const runMesh = mode === 'interact';
+  const runPassive = mode === 'execute';
   const S = BLAZEFACE_INPUT_SIZE;
   const MESH = FACEMESH_INPUT_SIZE;
   const AS = ANTISPOOF_INPUT_SIZE;
+  const AS_SCALE = ANTISPOOF_CROP_SCALE;
   const EMB = EMBEDDING_INPUT_SIZE;
   const scoreFloor = BLAZEFACE_SCORE_THRESHOLD;
   const padY = BLAZEFACE_BOX_PAD_Y;
-  // Plain-number captures (avoid serialising arrays into the worklet).
-  const m0 = ANTISPOOF_MEAN[0];
-  const m1 = ANTISPOOF_MEAN[1];
-  const m2 = ANTISPOOF_MEAN[2];
-  const sd0 = ANTISPOOF_STD[0];
-  const sd1 = ANTISPOOF_STD[1];
-  const sd2 = ANTISPOOF_STD[2];
 
   const handleSample = (
     boxPx: number[] | null,
@@ -212,6 +212,7 @@ export function useVerificationFrameOutput(
     h: number,
     fmt: string,
     ori: string,
+    ms: number,
   ) => {
     const dims = { width: w, height: h };
     let face: DetectedFace | null = null;
@@ -231,11 +232,13 @@ export function useVerificationFrameOutput(
       // `score` here is the raw best-anchor sigmoid confidence (pre-quality). If faces
       // never detect on-device, check fmt/ori below and the score: low score = bad
       // pixels (format/orientation); good score + low quality = framing/size.
+      // `ms` is the TOTAL worklet compute for this frame on-device (detect + whatever the
+      // mode runs) — the real on-phone per-stage latency signal (SC-002 / T100 / T102).
       console.log(
         `[frameProcessor] verify: face=${face ? face.qualityScore.toFixed(2) : 'none'} ` +
           `score=${score.toFixed(2)} ear=${ear == null ? 'n/a' : ear.toFixed(3)} ` +
           `real=${realProb == null ? 'n/a' : realProb.toFixed(2)} emb=${embedding == null ? 'n/a' : 'ok'} ` +
-          `| fmt=${fmt} ori=${ori} up=${w}x${h}`,
+          `ms=${ms < 0 ? 'n/a' : ms} | fmt=${fmt} ori=${ori} up=${w}x${h}`,
       );
     }
     onSample({ face, ear, realProb, embedding });
@@ -252,6 +255,8 @@ export function useVerificationFrameOutput(
         frame.dispose();
         return;
       }
+      // On-device compute timer (best-effort; Date is available in the worklet runtime).
+      const t0 = typeof Date !== 'undefined' && Date.now ? Date.now() : 0;
       try {
         // VisionCamera 'rgb' frames are non-planar 32-bit BGRA ('rgb-bgra-32-bit'):
         // 4 bytes/pixel, row stride = bytesPerRow (may be padded), and NOT auto-rotated
@@ -337,7 +342,7 @@ export function useVerificationFrameOutput(
         if (bi < 0 || bs < scoreFloor) {
           // No usable face: report and bail. `finally` disposes the frame — do NOT
           // dispose here too, or the double-dispose null-derefs in Nitro disposeRaw.
-          runOnJS(handleSample)(null, 0, null, null, null, w, h, fmt, ori);
+          runOnJS(handleSample)(null, 0, null, null, null, w, h, fmt, ori, t0 ? Date.now() - t0 : -1);
           return;
         }
 
@@ -381,7 +386,7 @@ export function useVerificationFrameOutput(
         let ear: number | null = null;
         let realProb: number | null = null;
         let embedding: number[] | null = null;
-        if (runLiveness) {
+        if (runMesh || runPassive) {
           // 6 BlazeFace keypoints of the best anchor: 0/1 = eyes, 3 = mouth.
           const kpx0 = regs[o + 4] / S + ax;
           const kpy0 = regs[o + 5] / S + ay;
@@ -393,7 +398,7 @@ export function useVerificationFrameOutput(
           // --- ACTIVE: FaceMesh on a 1.3× square crop centred on the eye↔mouth midpoint
           //     (mirrors face_crop in scripts/test_facemesh_f16.py). EAR is a ratio, so
           //     the crop-local [0,256] landmark space needs no remap. ---
-          if (lmBoxed) {
+          if (runMesh && lmBoxed) {
             const ccx = (((kpx0 + kpx1) / 2 + kpx3) / 2) * w;
             const ccy = (((kpy0 + kpy1) / 2 + kpy3) / 2) * h;
             const side = Math.max(bw * w, bh * h) * 1.3;
@@ -459,12 +464,12 @@ export function useVerificationFrameOutput(
             }
           }
 
-          // --- PASSIVE: Antispoof on a 1.5× box-centred crop (scaled_crop in
-          //     scripts/test_liveness.py). ---
-          if (asBoxed) {
+          // --- PASSIVE: Antispoof on a box-centred crop scaled by ANTISPOOF_CROP_SCALE
+          //     (the model wants the face small with border — see constants). ---
+          if (runPassive && asBoxed) {
             const bcx = cx * w;
             const bcy = cy * h;
-            const side = Math.max(bw * w, bh * h) * 1.5;
+            const side = Math.max(bw * w, bh * h) * AS_SCALE;
             let x0 = Math.floor(bcx - side / 2);
             let y0 = Math.floor(bcy - side / 2);
             let x1c = Math.floor(bcx + side / 2);
@@ -477,47 +482,120 @@ export function useVerificationFrameOutput(
             const chh = y1c - y0;
             if (cw > 1 && chh > 1) {
               const asIn = new Float32Array(AS * AS * 3);
+              // AREA-AVERAGING (box-filter) downscale of the crop → AS², NOT nearest:
+              // the antispoof model is a texture classifier, and nearest decimation
+              // aliases the print/screen texture into a phase-sensitive pattern that
+              // shifts with the detector's box jitter → realProb flickers on a still
+              // face. Averaging the footprint matches cv2.resize/PIL.BILINEAR in
+              // scripts/test_liveness.py + validate_antispoof.py (mirrors the unit-
+              // tested resizeRgbAreaAverage) and is what made the script-side
+              // predictions stable. RGB order + plain /255 (real-PAD calibrated; NOT
+              // BGR, NOT ImageNet — see preprocessAntispoof).
               for (let y = 0; y < AS; y++) {
-                const sy = y0 + Math.min(chh - 1, Math.floor((y * chh) / AS));
+                const syStart = y0 + Math.floor((y * chh) / AS);
+                let syEnd = y0 + Math.floor(((y + 1) * chh) / AS);
+                if (syEnd <= syStart) syEnd = syStart + 1;
                 for (let x = 0; x < AS; x++) {
-                  const sx = x0 + Math.min(cw - 1, Math.floor((x * cw) / AS));
-                  const si = (sy * w + sx) * 3;
+                  const sxStart = x0 + Math.floor((x * cw) / AS);
+                  let sxEnd = x0 + Math.floor(((x + 1) * cw) / AS);
+                  if (sxEnd <= sxStart) sxEnd = sxStart + 1;
+                  // NB: accumulators are NOT named `bs` — that's the outer detection
+                  // score; reusing it corrupts the reported score/quality.
+                  let rsum = 0;
+                  let gsum = 0;
+                  let bsum = 0;
+                  let cnt = 0;
+                  for (let sy = syStart; sy < syEnd; sy++) {
+                    for (let sx = sxStart; sx < sxEnd; sx++) {
+                      const si = (sy * w + sx) * 3;
+                      rsum += rgb[si];
+                      gsum += rgb[si + 1];
+                      bsum += rgb[si + 2];
+                      cnt++;
+                    }
+                  }
                   const di = (y * AS + x) * 3;
-                  asIn[di] = (rgb[si] / 255 - m0) / sd0;
-                  asIn[di + 1] = (rgb[si + 1] / 255 - m1) / sd1;
-                  asIn[di + 2] = (rgb[si + 2] / 255 - m2) / sd2;
+                  asIn[di] = rsum / cnt / 255; // R
+                  asIn[di + 1] = gsum / cnt / 255; // G
+                  asIn[di + 2] = bsum / cnt / 255; // B
                 }
               }
               const aOut = new Float32Array(asBoxed.unbox().runSync([asIn.buffer])[0]);
               const mx = aOut[0] > aOut[1] ? aOut[0] : aOut[1];
               const e0 = Math.exp(aOut[0] - mx);
               const e1 = Math.exp(aOut[1] - mx);
-              realProb = e1 / (e0 + e1);
+              // class 0 = real/live (class 1 = attack) — determined from real PAD data.
+              realProb = e0 / (e0 + e1);
             }
           }
 
-          // --- IDENTITY: MobileFaceNet on a tight face crop → 112² → q = px-128 (int8)
-          //     → raw int8 [128], copied to a plain array for the worklet→JS hop (JS
-          //     dequantises + L2-normalises via finalizeEmbedding). Same frame as the
-          //     liveness layers above ⇒ identity is bound to the proven-live pixels. ---
-          if (emBoxed) {
-            let ex0 = Math.floor((cx - bw / 2) * w);
-            let ey0 = Math.floor((cy - bh / 2) * h);
-            let ex1 = Math.floor((cx + bw / 2) * w);
-            let ey1 = Math.floor((cy + bh / 2) * h);
-            ex0 = ex0 < 0 ? 0 : ex0;
-            ey0 = ey0 < 0 ? 0 : ey0;
-            ex1 = ex1 > w ? w : ex1;
-            ey1 = ey1 > h ? h : ey1;
-            const cw = ex1 - ex0;
-            const chh = ey1 - ey0;
-            if (cw > 1 && chh > 1) {
-              const emIn = new Int8Array(EMB * EMB * 3);
+          // --- IDENTITY: MobileFaceNet on a 5-point ArcFace-ALIGNED 112² crop →
+          //     q = px-128 (int8) → raw int8 [128], copied to a plain array for the
+          //     worklet→JS hop (JS dequantises + L2-normalises via finalizeEmbedding).
+          //     Same frame as the liveness layers ⇒ identity is bound to the
+          //     proven-live pixels. Alignment (vs the old raw-box squash) is the
+          //     dominant recognition-accuracy fix — LFW AUC 0.79→0.96; see
+          //     solveSimilarityTransform / ARCFACE_TEMPLATE_112 +
+          //     scripts/validate_recognition_lfw.py. ---
+          if (runPassive && emBoxed) {
+            // src keypoints (px): R-eye, L-eye, nose (o+8/9), mouth — from BlazeFace.
+            const kpx2 = regs[o + 8] / S + ax;
+            const kpy2 = regs[o + 9] / S + ay;
+            const sxs = [kpx0 * w, kpx1 * w, kpx2 * w, kpx3 * w];
+            const sys = [kpy0 * h, kpy1 * h, kpy2 * h, kpy3 * h];
+            // dst = ARCFACE_TEMPLATE_112 (kept inline; worklets can't import). These
+            // are the canonical ArcFace points tightened ARCFACE_CROP_TIGHTEN=1.15×
+            // about their centroid — MobileFaceNet separates best when the face fills
+            // ~15% more of the 112² frame (LFW AUC 0.948→0.959; see preprocessing.ts /
+            // scripts/sweep_crop_margin.py). Keep in sync with ARCFACE_TEMPLATE_112.
+            const dxs = [35.6391, 76.1619, 56.0293, 56.1609];
+            const dys = [49.43, 49.2059, 72.4764, 96.1068];
+            let smx = 0;
+            let smy = 0;
+            let dmx = 0;
+            let dmy = 0;
+            for (let i = 0; i < 4; i++) {
+              smx += sxs[i];
+              smy += sys[i];
+              dmx += dxs[i];
+              dmy += dys[i];
+            }
+            smx /= 4;
+            smy /= 4;
+            dmx /= 4;
+            dmy /= 4;
+            let numRe = 0;
+            let numIm = 0;
+            let den = 0;
+            for (let i = 0; i < 4; i++) {
+              const aX = sxs[i] - smx;
+              const aY = sys[i] - smy;
+              const bX = dxs[i] - dmx;
+              const bY = dys[i] - dmy;
+              numRe += aX * bX + aY * bY;
+              numIm += aX * bY - aY * bX;
+              den += aX * aX + aY * aY;
+            }
+            // forward similarity src→dst (a,b,tx,ty); invert per-pixel for sampling.
+            const fa = den > 1e-6 ? numRe / den : 0;
+            const fb = den > 1e-6 ? numIm / den : 0;
+            const ftx = dmx - (fa * smx - fb * smy);
+            const fty = dmy - (fb * smx + fa * smy);
+            const fdet = fa * fa + fb * fb;
+            const emIn = new Int8Array(EMB * EMB * 3);
+            if (fdet > 1e-9) {
+              // inverse: src = (1/det)[[a,b],[-b,a]]·(dst − t)
+              const ia = fa / fdet;
+              const ib = fb / fdet;
               for (let y = 0; y < EMB; y++) {
-                const sy = ey0 + Math.min(chh - 1, Math.floor((y * chh) / EMB));
                 for (let x = 0; x < EMB; x++) {
-                  const sx = ex0 + Math.min(cw - 1, Math.floor((x * cw) / EMB));
-                  const si = (sy * w + sx) * 3;
+                  const ddx = x - ftx;
+                  const ddy = y - fty;
+                  let sx = ia * ddx + ib * ddy;
+                  let sy = -ib * ddx + ia * ddy;
+                  sx = sx < 0 ? 0 : sx > w - 1 ? w - 1 : sx;
+                  sy = sy < 0 ? 0 : sy > h - 1 ? h - 1 : sy;
+                  const si = (Math.floor(sy) * w + Math.floor(sx)) * 3;
                   const di = (y * EMB + x) * 3;
                   emIn[di] = rgb[si] - 128;
                   emIn[di + 1] = rgb[si + 1] - 128;
@@ -525,11 +603,37 @@ export function useVerificationFrameOutput(
                 }
               }
               embedding = Array.from(new Int8Array(emBoxed.unbox().runSync([emIn.buffer])[0]));
+            } else {
+              // Degenerate keypoints → fall back to the raw box square crop.
+              let ex0 = Math.floor((cx - bw / 2) * w);
+              let ey0 = Math.floor((cy - bh / 2) * h);
+              let ex1 = Math.floor((cx + bw / 2) * w);
+              let ey1 = Math.floor((cy + bh / 2) * h);
+              ex0 = ex0 < 0 ? 0 : ex0;
+              ey0 = ey0 < 0 ? 0 : ey0;
+              ex1 = ex1 > w ? w : ex1;
+              ey1 = ey1 > h ? h : ey1;
+              const cw = ex1 - ex0;
+              const chh = ey1 - ey0;
+              if (cw > 1 && chh > 1) {
+                for (let y = 0; y < EMB; y++) {
+                  const sy = ey0 + Math.min(chh - 1, Math.floor((y * chh) / EMB));
+                  for (let x = 0; x < EMB; x++) {
+                    const sx = ex0 + Math.min(cw - 1, Math.floor((x * cw) / EMB));
+                    const si = (sy * w + sx) * 3;
+                    const di = (y * EMB + x) * 3;
+                    emIn[di] = rgb[si] - 128;
+                    emIn[di + 1] = rgb[si + 1] - 128;
+                    emIn[di + 2] = rgb[si + 2] - 128;
+                  }
+                }
+                embedding = Array.from(new Int8Array(emBoxed.unbox().runSync([emIn.buffer])[0]));
+              }
             }
           }
         }
 
-        runOnJS(handleSample)(boxPx, bs, ear, realProb, embedding, w, h, fmt, ori);
+        runOnJS(handleSample)(boxPx, bs, ear, realProb, embedding, w, h, fmt, ori, t0 ? Date.now() - t0 : -1);
       } catch (e) {
         runOnJS(handleError)(String(e));
       } finally {

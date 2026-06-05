@@ -15,7 +15,10 @@ import {
   fuseLiveness,
   passiveLiveness,
   faceMovement,
+  aggregateRealProb,
   reduceCapture,
+  reduceCaptureDetailed,
+  passiveLivenessDetailed,
   check,
   extractEyeLandmarks,
   EAR_RIGHT_EYE_INDICES,
@@ -25,7 +28,7 @@ import {
   type LivenessDeps,
   type CaptureFrameSample,
 } from '../../../src/ml/LivenessDetector';
-import { LIVENESS_BLINK_FRAMES } from '../../../src/constants';
+import { LIVENESS_BLINK_FRAMES, LIVENESS_ANTISPOOF_REAL_THRESHOLD } from '../../../src/constants';
 
 // p1..p6 in the dlib/MediaPipe EAR convention: p1,p4 = horizontal corners;
 // (p2,p6) and (p3,p5) = the two vertical pairs.
@@ -101,7 +104,8 @@ describe('detectBlink', () => {
 
 describe('fuseLiveness', () => {
   it('given_low_real_probability_then_spoof_regardless_of_blink', () => {
-    expect(fuseLiveness(true, 0.1)).toBe('spoof');
+    // gate is ≈0 now, so a "spoof" texture reading must be ~zero (see threshold note).
+    expect(fuseLiveness(true, 0)).toBe('spoof');
   });
 
   it('given_real_face_and_blink_then_live', () => {
@@ -120,7 +124,7 @@ describe('check (frame stream fusion)', () => {
   });
 
   it('given_printed_photo_low_texture_then_spoof', () => {
-    const frames = [frame(true, 0.1), frame(false, 0.1), frame(true, 0.1)];
+    const frames = [frame(true, 0), frame(false, 0), frame(true, 0)];
     expect(check(frames, deps())).toBe('spoof');
   });
 
@@ -148,14 +152,18 @@ describe('passiveLiveness (antispoof-only verdict — least-compute layer)', () 
     expect(passiveLiveness([0.9, 0.8, 0.95])).toBe('live');
   });
 
-  it('given_low_mean_real_probability_then_spoof', () => {
-    expect(passiveLiveness([0.1, 0.2, 0.15])).toBe('spoof');
+  it('given_below_threshold_mean_real_probability_then_spoof', () => {
+    // With the gate effectively disabled (≈0.001) only a ~zero reading is a spoof.
+    expect(passiveLiveness([0, 0, 0])).toBe('spoof');
   });
 
   it('uses_LIVENESS_ANTISPOOF_REAL_THRESHOLD_as_the_boundary', () => {
-    // threshold = 0.5: a mean just over → live, just under → spoof.
-    expect(passiveLiveness([0.6, 0.6])).toBe('live');
-    expect(passiveLiveness([0.4, 0.4])).toBe('spoof');
+    // a mean just over the gate → live, just under → spoof (threshold-relative so it
+    // tracks LIVENESS_ANTISPOOF_REAL_THRESHOLD instead of hard-coding the value; clamped
+    // to [0,1] since the gate is now ≈0).
+    const t = LIVENESS_ANTISPOOF_REAL_THRESHOLD;
+    expect(passiveLiveness([Math.min(1, t + 0.05), Math.min(1, t + 0.05)])).toBe('live');
+    expect(passiveLiveness([Math.max(0, t - 0.05), Math.max(0, t - 0.05)])).toBe('spoof');
   });
 });
 
@@ -213,7 +221,7 @@ describe('reduceCapture (window → liveness verdict: movement OR blink, antispo
   });
 
   it('given_movement_but_low_texture_then_spoof_passive_dominates', () => {
-    expect(reduceCapture(moving(5, 0.1))).toBe('spoof');
+    expect(reduceCapture(moving(5, 0))).toBe('spoof');
   });
 
   it('given_real_texture_but_no_movement_and_no_blink_then_inconclusive', () => {
@@ -223,6 +231,106 @@ describe('reduceCapture (window → liveness verdict: movement OR blink, antispo
   it('given_face_not_held_for_enough_of_the_window_then_inconclusive_continuity_gate', () => {
     // 4 moving frames + 4 absent → presence 0.5 < 0.6 ⇒ possible swap/pull-away.
     expect(reduceCapture([...moving(4), absent, absent, absent, absent])).toBe('inconclusive');
+  });
+});
+
+describe('aggregateRealProb (trimmed-mean antispoof, anti-fluctuation)', () => {
+  it('given_empty_then_zero', () => {
+    expect(aggregateRealProb([])).toBe(0);
+  });
+
+  it('given_fewer_than_four_then_plain_mean', () => {
+    expect(aggregateRealProb([0.2, 0.8])).toBeCloseTo(0.5);
+  });
+
+  it('given_four_or_more_then_drops_lowest_and_highest', () => {
+    // [0.0, 0.9, 0.9, 0.9, 1.0] → trim 0.0 and 1.0 → mean(0.9,0.9,0.9) = 0.9.
+    expect(aggregateRealProb([0.9, 0.0, 0.9, 1.0, 0.9])).toBeCloseTo(0.9);
+  });
+
+  it('given_a_single_outlier_spike_then_verdict_is_not_flipped', () => {
+    // One jittery low frame among a live plateau stays above the 0.85 gate.
+    expect(aggregateRealProb([0.95, 0.96, 0.05, 0.97, 0.95])).toBeGreaterThan(0.85);
+  });
+});
+
+describe('reduceCaptureDetailed (verdict + specific failing-layer reason)', () => {
+  const cap = (over: Partial<CaptureFrameSample> = {}): CaptureFrameSample => ({
+    facePresent: true,
+    ear: null,
+    realProb: 0.9,
+    cx: 100,
+    cy: 100,
+    size: 100,
+    ...over,
+  });
+  const absent: CaptureFrameSample = {
+    facePresent: false,
+    ear: null,
+    realProb: null,
+    cx: null,
+    cy: null,
+    size: null,
+  };
+  const still = (n: number, realProb = 0.9): CaptureFrameSample[] =>
+    Array.from({ length: n }, () => cap({ realProb }));
+  const moving = (n: number, realProb = 0.9): CaptureFrameSample[] =>
+    Array.from({ length: n }, (_, i) => cap({ cx: 100 + i * 30, realProb }));
+
+  it('given_no_samples_then_inconclusive_no_face', () => {
+    expect(reduceCaptureDetailed([])).toEqual({ result: 'inconclusive', reason: 'no_face' });
+  });
+
+  it('given_face_absent_for_most_of_window_then_no_face', () => {
+    expect(reduceCaptureDetailed([...moving(4), absent, absent, absent, absent])).toEqual({
+      result: 'inconclusive',
+      reason: 'no_face',
+    });
+  });
+
+  it('given_low_texture_then_spoof_reason', () => {
+    expect(reduceCaptureDetailed(moving(5, 0))).toEqual({ result: 'spoof', reason: 'spoof' });
+  });
+
+  it('given_real_texture_but_no_active_signal_then_no_movement_reason', () => {
+    expect(reduceCaptureDetailed(still(5))).toEqual({
+      result: 'inconclusive',
+      reason: 'no_movement',
+    });
+  });
+
+  it('given_movement_and_real_texture_then_live', () => {
+    expect(reduceCaptureDetailed(moving(5))).toEqual({ result: 'live', reason: 'live' });
+  });
+
+  it('reduceCapture_stays_in_sync_with_the_detailed_result', () => {
+    expect(reduceCapture(moving(5))).toBe(reduceCaptureDetailed(moving(5)).result);
+    expect(reduceCapture(moving(5, 0))).toBe(reduceCaptureDetailed(moving(5, 0)).result);
+  });
+});
+
+describe('passiveLivenessDetailed (Phase-3 burst: antispoof-only, active already passed)', () => {
+  it('given_no_frames_then_inconclusive_no_face', () => {
+    expect(passiveLivenessDetailed([])).toEqual({ result: 'inconclusive', reason: 'no_face' });
+  });
+
+  it('given_high_aggregate_real_prob_then_live', () => {
+    expect(passiveLivenessDetailed([0.95, 0.96, 0.97, 0.95])).toEqual({
+      result: 'live',
+      reason: 'live',
+    });
+  });
+
+  it('given_low_aggregate_real_prob_then_spoof', () => {
+    expect(passiveLivenessDetailed([0, 0, 0, 0])).toEqual({
+      result: 'spoof',
+      reason: 'spoof',
+    });
+  });
+
+  it('given_a_single_jittery_low_frame_then_still_live_trimmed_mean', () => {
+    // The trimmed mean drops the one 0.05 spike → the live plateau survives the gate.
+    expect(passiveLivenessDetailed([0.95, 0.96, 0.05, 0.97, 0.95]).result).toBe('live');
   });
 });
 

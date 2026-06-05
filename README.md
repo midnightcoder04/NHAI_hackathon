@@ -17,8 +17,8 @@ Selective quantization — f16 where stability matters, INT8 where NNAPI acceler
 1. **Face Detection** — Google BlazeFace f16 (~0.22 MB, `blaze_face_short_range_float16.tflite`): bounding box + 6 landmarks; f16 chosen over INT8 to avoid degenerate 8×8 anchor quantization that causes frame-to-frame jitter
 2. **Face Recognition** — MobileFaceNet INT8 (~1.5 MB, `MobileFaceNet_new_latest_int8.tflite`): 128-dim embedding, cosine similarity threshold ~0.6–0.7; NNAPI/Hexagon DSP acceleration
 3. **Dual-Layer Liveness Detection** (~3.0 MB):
-   - *Active*: MiniFASNet f16 (~2.4 MB, `face_landmarks_detector_float16.tflite`) — geometric landmark tracking for blink/smile/head-turn
-   - *Passive*: Antispoof INT8 (~0.63 MB, `antispoof_128x128_int8.tflite`) — texture classifier for photo/screen replay detection
+   - *Active*: MediaPipe FaceMesh f16 (~2.4 MB, `face_landmarks_detector_float16.tflite`) — geometric landmark tracking for blink/smile/head-turn
+   - *Passive*: MiniFASNet Antispoof INT8 (~0.63 MB, `antispoof_128x128_int8.tflite`) — texture classifier for photo/screen replay detection
 
 Performance budget: ~210ms total (BlazeFace f16 ~20ms + MobileFaceNet INT8 ~60ms + MiniFASNet f16 ~100ms + Antispoof INT8 ~30ms)
 
@@ -64,12 +64,11 @@ The INT8 model's 8×8 anchor grid has degenerate post-training quantization, cau
 
 **Tradeoff:** +0.06 ms/frame for stable, jitter-free detections.
 
-### 2. Why float16 for MiniFASNet2 ?
+### 2. Why float16 for MediaPipe Face Mesh  ?
 
-Liveness detection (MiniFASNet2) is less accurate when quantized to INT8 directly. 
-Anti-spoofing AI relies on detecting incredibly subtle micro-textures, like the moiré patterns of a digital screen or the lack of depth in a printed photo.
+Face Mesh is a coordinate regression model. It outputs exact pixel coordinates. Converting 32-bit floating-point math (FP32) to INT8 forces the model to round its numbers aggressively. In Face Mesh, rounding errors manifest as physical "jitter"—the predicted landmarks on the eyes and mouth will vibrate or drift erratically across frames. Because the model requires sub-pixel precision to accurately map 478 dense points, standard Post-Training Quantization (PTQ) will completely ruin its accuracy. 
 
-While INT8 liveness detection is used in production, it typically requires complex Quantization-Aware Training (QAT) or meticulous dataset calibration to force the network to preserve those critical textures, making off-the-shelf conversion unviable.
+TLDR: It is highly sensitive.
 
 ### 3. Requirements of INT8 models?
 

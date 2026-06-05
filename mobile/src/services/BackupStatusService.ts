@@ -108,6 +108,37 @@ export async function cancelJob(db: Db, id: string): Promise<void> {
   });
 }
 
+/**
+ * Demo-facing backup completion run when connectivity returns: clears the local pending
+ * queue (the rows surfaced as "pending records") and records a COMPLETED backup_job so the
+ * "last successful sync" time is persisted and shown thereafter — including when offline,
+ * since getStatus reads it back from the DB. Real cloud upload is
+ * SyncService.runDispatchCycle; this is the local effect the demo relies on.
+ * Returns the number of records cleared; a no-op (returns 0) when nothing is pending.
+ */
+export async function completeBackupNow(db: Db): Promise<number> {
+  const row = await (db as SQLiteDatabase).getFirstAsync<{ cnt: number }>(
+    "SELECT COUNT(*) AS cnt FROM sync_outbox WHERE status = 'pending'",
+  );
+  const count = row?.cnt ?? 0;
+  if (count === 0) return 0;
+  // Clear the local sync queue (demo: treat as backed up) and mark the source rows synced
+  // so they aren't re-counted as pending after the queue is emptied.
+  await (db as SQLiteDatabase).runAsync("DELETE FROM sync_outbox WHERE status = 'pending'");
+  await (db as SQLiteDatabase).runAsync(
+    "UPDATE verification_record SET sync_status = 'synced' WHERE sync_status = 'pending'",
+  );
+  // Record a completed job → persists the last successful sync time (shown online & offline).
+  const id = await startJob(db);
+  await completeJob(db, id, {
+    recordsPersonnel: 0,
+    recordsVerification: count,
+    recordsImages: 0,
+    bytesTransferred: 0,
+  });
+  return count;
+}
+
 export async function getStatus(db: Db): Promise<BackupStatus> {
   const [latestJob, pendingRow] = await Promise.all([
     BackupJobRepository.findLatest(db as SQLiteDatabase),
@@ -135,6 +166,7 @@ export function useBackupStatusService() {
     completeJob: (id: string, summary: SyncJobSummary) => completeJob(db, id, summary),
     failJob: (id: string, errorMessage: string) => failJob(db, id, errorMessage),
     cancelJob: (id: string) => cancelJob(db, id),
+    completeBackupNow: () => completeBackupNow(db),
     getStatus: () => getStatus(db),
     requestNotificationPermission,
   };

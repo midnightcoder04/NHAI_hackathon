@@ -36,7 +36,71 @@ A React Native (Expo bare workflow) mobile app that performs on-device facial re
 
 **Scale/Scope**: Single-device operator; 50+ enrolled personnel records; 500 verification records per typical field session per sync batch
 
-**Profiling Results**: To be recorded here post-implementation per Constitution V (memory/CPU profile on a mid-range device — e.g., Snapdragon 665 / 3 GB RAM — and per-stage inference timings; see task T102). _[pending]_
+**Profiling Results**: Memory/CPU profile on a mid-range device (Snapdragon 665 / 3 GB RAM) is still _[pending]_ (task T102). The offline portions of the T100 benchmark have been measured below: **SC-004 face-matching accuracy** (external LFW dataset), **SC-002 per-stage inference latency** (dev CPU), and **SC-003 anti-spoof** (harness + proxy — certification still needs real PAD data).
+
+_MobileFaceNet INT8 recognition accuracy — external validation (2026-06-05)_
+
+- **Harness**: `scripts/validate_recognition_lfw.py` simulates the device pipeline in Python (ai_edge_litert) — `sklearn.datasets.fetch_lfw_pairs(subset='test')` (1000 pairs, 500 same / 500 different) → **BlazeFace** short-range f16 detect/crop → **MobileFaceNet** INT8 112×112 → 128-d L2-normed embedding → cosine. Exact quant/anchor/decode conventions reused from `scripts/test_blazeface_f16.py` + `test_recognition.py`. BlazeFace detected a face in **96.3 %** of images. ~25 ms/pair on CPU.
+
+| Pipeline variant | ROC-AUC | Acc @ gate | Best acc (threshold) | SC-004 (≥ 90 %) |
+|---|---|---|---|---|
+| Old as-shipped (raw BlazeFace box → squashed 112²) | 0.794 | 71.3 % @ 0.65 | 73.4 % @ 0.69 | ❌ below target |
+| + 5-pt ArcFace align (canonical 112² template) | 0.950 | — | 91.2 % @ 0.43 | ✅ meets target |
+| **NOW SHIPPED: align + 1.15× tightened crop @ 0.45 gate** | **0.961** | **90.9 % @ 0.45** (prec 98.3 % / rec 83.2 %) | 92.0 % @ 0.41 | ✅ meets target |
+| Reference: SVD-umeyama + bilinear warp | **0.963** | — | 92.4 % @ 0.42 | ✅ meets target |
+
+**Finding 1 — RESOLVED (2026-06-05): 5-point ArcFace alignment is now implemented on-device.** MobileFaceNet (ArcFace family) expects faces similarity-warped to a canonical 112² template; the old worklet fed the raw BlazeFace box (the dominant accuracy leak). The fix lands a closed-form 2D-similarity solve (`solveSimilarityTransform` + `ARCFACE_TEMPLATE_112` in `mobile/src/ml/preprocessing.ts`, complex least-squares = reflection-free Umeyama, no SVD) inlined into the `frameProcessor.ts` IDENTITY block (per-pixel inverse-warp + nearest-neighbour sample, with a degenerate-keypoint fallback to the box crop). The **exact shipped math** is mirrored in `validate_recognition_lfw.py` (`--align --align-method similarity-nearest`).
+
+**Finding 1b — RESOLVED (2026-06-06): crop tightened 1.15× + model comparison.** A crop-tightness sweep (`scripts/sweep_crop_margin.py`, BlazeFace cached once, only the warp scale varies) tested the hypothesis that the detector hand-off was too tight (skipping forehead/hair). The opposite holds: **looser crops hurt monotonically** (AUC 0.95→0.65 toward 0.55× as hair/background — identity-noise shared across people — inflates impostor similarity), and a *slight tighten* helps, peaking at **≈1.15× about the template centroid** (AUC 0.950→0.961, best-acc 91.1→91.8 %); beyond ~1.2× the outer landmarks clip. Shipped via `ARCFACE_CROP_TIGHTEN = 1.15` (derives `ARCFACE_TEMPLATE_112` from the canonical points; worklet inlines the same coords). A model comparison (`scripts/compare_mfn_variants.py`) also measured the **float32 (192-d) and a float16 sim (`make_fp16.py`)** exports at AUC **0.968** (best-acc 93.8 %) — ~+0.02 over int8 — but they require a 128→192-d embedding-schema migration + full re-enrollment, so **int8 was retained** as the better cost/benefit (the tightened crop is the free win).
+
+**Finding 2 — RESOLVED (2026-06-06): `FACE_MATCH_THRESHOLD` recalibrated 0.65 → 0.45.** Alignment widened class separation but lowered absolute cosines, so the old 0.65 gave precision 100 % / recall **47 %** (over half of genuine users read not-authorised). The operating point was chosen from the FAR/FRR curve (`scripts/threshold_report.py`): **0.45 → FAR ≈ 1.4 % / FRR ≈ 16.8 % / accuracy 90.9 % (meets SC-004 at the gate), precision 98.3 %**; recall recovered 47 %→83 %. `FACE_LOW_CONFIDENCE_THRESHOLD` moved 0.5 → 0.40 in lockstep (kept below the match gate). Caveat: LFW is a hard benchmark (look-alike impostors), so field FAR should be lower — **re-confirm on real field/PAD captures** before final sign-off, alongside SC-003.
+
+> Note: LFW is unconstrained-pose/lighting and harder than the frontal field use-case, so these are conservative lower bounds; the aligned ~0.95 AUC is the meaningful separability signal.
+
+_Per-stage inference benchmark — dev CPU (2026-06-05)_
+
+- **Harness**: `scripts/benchmark_models.py` warms up then times (50 iters) a forward pass of each pipeline model with the exact input dtype/shape/normalisation the worklet feeds, on the dev machine (ai_edge_litert + XNNPACK, **CPU-only — not** the Snapdragon 665 target; on-device profiling stays T102).
+
+| Stage | Model | Plan budget | Dev-CPU mean / p95 |
+|---|---|---|---|
+| BlazeFace (detect) | `blaze_face_short_range_float16` | ~20 ms | 0.6 / 0.6 ms |
+| MobileFaceNet (embed) | `MobileFaceNet_new_latest_int8` | ~60 ms | 11.4 / 11.6 ms |
+| FaceMesh (active liveness) | `face_landmarks_detector_float16` | ~100 ms | 2.4 / 2.5 ms |
+| Antispoof (passive liveness) | `antispoof_128x128_int8` | ~30 ms | 2.2 / 2.3 ms |
+| **Per-verification total** | — | **~210 ms** | **~16.6 / 17 ms (Σ)** |
+
+SC-002 (< 1 s end-to-end): **PASS** on dev CPU with wide margin (Σ p95 ≈ 17 ms ≪ 1000 ms); the four stages also sit under the ~210 ms inference budget. Caveat: this is a no-NNAPI CPU upper bound — the binding latency check is the on-device profile (T102). One actionable note: the bundled **INT8 antispoof is *slower* on dev CPU (2.2 ms) than its f16/f32 siblings (0.9 ms)** — INT8 only pays off with the NNAPI/GPU integer path, so confirm the delegate is active on-device or the f16 variant may be the better pick.
+
+_Anti-spoof (passive liveness) validation — SC-003 (2026-06-05)_
+
+- **Harness**: `scripts/validate_antispoof.py` simulates the device's PASSIVE path (`frameProcessor.ts` + `test_liveness.py`): BlazeFace f16 detect → **1.5× box-centred crop** → Antispoof 128² (ImageNet-norm → softmax → `realProb = p[real]`) gated at `LIVENESS_ANTISPOOF_REAL_THRESHOLD = 0.5`. Reports the ISO/IEC 30107-3 PAD metrics (APCER/BPCER/ACER). Two modes: **certification** (`--live-dir`/`--spoof-dir` on a real presentation-attack capture set) and **proxy** (default: real LFW faces as bona-fide + synthetic print/screen recapture artefacts as attacks).
+- **As-shipped result (PROXY, 300 bona-fide + 300 synthetic attacks):** ROC-AUC **0.51** (≈ random); at the 0.5 gate spoof-rejection 54 %, **BPCER 49 %** (nearly half of genuine LFW faces wrongly rejected); the model emits near-binary `realProb` (clustered at 0.0/1.0) that does **not** track the label.
+
+**⚠️ Root cause found — the app's antispoof preprocessing is wrong (`scripts/diagnose_antispoof.py`).** A model-variant × colour × normalisation sweep (int8/f16/f32 × {rgb,bgr} × {imagenet,unit,signed,raw}) on genuine faces shows:
+
+| Config | genuine→real | sep AUC | logit saturation |
+|---|---|---|---|
+| **As-shipped** — int8, **RGB**, **ImageNet** mean/std | 46 % | 0.47 | 68 % (confident-wrong) |
+| **Correct** — int8, **BGR**, **plain /255** ([0,1]) | **98 %** | **0.74** | **0 %** |
+
+- **Model variant is NOT the issue** — int8 ≈ float16 ≈ float32 within ±0.01 AUC under any fixed preprocessing; switching variant alone changes nothing. (Side note for the latency/size trade-off, not accuracy.)
+- **Preprocessing WAS the issue (now fixed)** — the model expects **BGR channel order + plain `/255` normalisation**, not the RGB + ImageNet mean/std the worklet copied from `test_liveness.py`. Correcting it lifts genuine acceptance **46 % → 98 %** (BPCER 49 % → **0 %**), separation AUC **0.47 → 0.74**, and de-saturates the logits (gap 31.6 → 5.4). The old config was near the *worst* of all 24 combinations.
+
+**Finding — PREPROCESSING FIX (2026-06-05), ⚠️ LATER SUPERSEDED.** The synthetic-proxy sweep above concluded **BGR + /255** and shipped it. On real PAD data (next finding) that turned out to be **wrong** — the synthetic recapture artefacts were not representative, so the BGR result did not transfer.
+
+**Finding — SC-003 CERTIFIED on real PAD data; antispoof re-corrected (2026-06-06).** A real presentation-attack set arrived (`LiveSpoofDataset/` — 3,062 live + 3,107 spoof, pre-cropped 112² faces). Re-evaluating against ground truth (`scripts/compare_antispoof_variants.py`, `investigate_antispoof_crop.py`, held-out train/test split) overturns the synthetic conclusion on two counts:
+
+| Config (on real PAD) | ROC-AUC | spoof-rej @0.5 | BPCER @0.5 |
+|---|---|---|---|
+| Shipped at the time — **BGR**, `realProb = p[1]` | **0.26** (inverted!) | 13 % | 40 % |
+| Corrected — **RGB + /255**, `realProb = p[0]` (class 0 = real) | **0.81** | 67 % | 16 % |
+
+- **Two compounding bugs**, both proven on a held-out split (train AUC 0.820 → test 0.807, not overfit): (i) preprocessing is **RGB + /255**, not BGR; (ii) the **class index was flipped — class 0 = real**, not class 1. The shipped gate was *worse than random*: accepting ~87 % of spoofs while rejecting ~40 % of genuine users.
+- **Model variant still irrelevant** — on real data int8 ≈ float16 ≈ float32 within **AUC 0.0003** (pairwise corr ≥ 0.999). No accuracy from switching variants; int8 retained.
+- **Crop framing matters** — the model wants the face small with border (Silent-Face family). A crop-scale sweep put the optimum near **2.0×** (vs the old 1.5×), AUC ≈ 0.81 → 0.84. Shipped as `ANTISPOOF_CROP_SCALE = 2.0` (proxy-derived via reflect-pad on the pre-cropped set; confirm exact value on real frames).
+- **APPLIED:** `preprocessAntispoof` (RGB + /255), `antispoofRealProbability` (`p[0]`), the inlined worklet (RGB order, `realProb = e0/(e0+e1)`, `ANTISPOOF_CROP_SCALE`), `test_liveness.py`, `validate_antispoof.py`, and `preprocessing.test.ts` all updated (jest green, tsc clean).
+
+> **SC-003 is now CERTIFIED on real data — and FAILS.** Even fully corrected, the model tops out at **ROC-AUC ≈ 0.81–0.84 / ~67–74 % spoof-rejection**; reaching 95 % spoof-rejection requires a gate (~0.998) that **rejects ~75 % of genuine users**. That is a **model-capability gap, not an operating-point one** — SC-003 (≥ 95 %) needs a **stronger passive anti-spoof model**, not threshold tuning. The current model is now at least correctly wired (un-broken) and provides a meaningful, if insufficient, passive layer atop the active blink/movement liveness.
 
 ## Constitution Check
 

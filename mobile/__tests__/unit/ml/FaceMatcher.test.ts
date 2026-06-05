@@ -81,12 +81,12 @@ describe('FaceMatcher.matchBest', () => {
   });
 
   it('given_best_below_threshold_then_returns_null', () => {
-    const match = FaceMatcher.matchBest(QUERY, [candidate('p1', unit(0.55))]);
+    const match = FaceMatcher.matchBest(QUERY, [candidate('p1', unit(0.42))]);
     expect(match).toBeNull();
   });
 
   it('given_low_confidence_band_then_scoreBest_exposes_it_while_matchBest_is_null', () => {
-    const candidates = [candidate('p1', unit(0.55))];
+    const candidates = [candidate('p1', unit(0.42))];
     const raw = scoreBest(QUERY, candidates);
     expect(raw?.score).toBeGreaterThanOrEqual(FACE_LOW_CONFIDENCE_THRESHOLD);
     expect(raw!.score).toBeLessThan(FACE_MATCH_THRESHOLD);

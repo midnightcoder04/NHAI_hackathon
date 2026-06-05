@@ -2,8 +2,9 @@
 """Live webcam test for the MobileNetV4 passive-liveness model.
 
 Model : models/antispoof_128x128_float32.tflite
-Input : float32 [1,128,128,3]  RGB, ImageNet-normalised
-Output: float32 [1,2]          logits; class 0=spoof, class 1=real/live
+Input : float32 [1,128,128,3]  RGB, plain px/255 ([0,1])
+Output: float32 [1,2]          logits; class 0=real/live, class 1=attack/spoof
+        (polarity + RGB calibrated on real PAD — compare_antispoof_variants.py)
 
 Face crop: 1.5× Haar bbox, centred. Haar minSize=(60,60).
 Draws REAL / SPOOF verdict + confidence live.
@@ -30,11 +31,6 @@ SIZE  = 128
 SCALE = 1.5
 HAAR  = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-# ImageNet stats (RGB order, matching training transforms)
-_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-
-
 def softmax(x):
     e = np.exp(x - x.max())
     return e / e.sum()
@@ -59,9 +55,11 @@ def make_classifier(model_path):
     out = interp.get_output_details()[0]
 
     def classify(crop_bgr):
+        # Model wants RGB + plain /255 (NO ImageNet mean/std). cv2 frames are BGR,
+        # so convert to RGB here. Calibrated on real PAD — compare_antispoof_variants.py
+        # / preprocessAntispoof.
         rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
         img = cv2.resize(rgb, (SIZE, SIZE)).astype(np.float32) / 255.0
-        img = (img - _MEAN) / _STD
         interp.set_tensor(inp["index"], img[None])
         interp.invoke()
         return softmax(interp.get_tensor(out["index"]).reshape(-1))
@@ -103,8 +101,8 @@ def main():
             crop, x0, y0, x1, y1 = scaled_crop(frame, x, y, w, h, SCALE)
             if crop.size:
                 probs = classify(crop)
-                live  = int(probs.argmax()) == 1
-                conf  = float(probs[1])
+                live  = int(probs.argmax()) == 0  # class 0 = real/live
+                conf  = float(probs[0])
                 col   = (0, 255, 0) if live else (0, 0, 255)
                 label = "REAL" if live else "SPOOF"
                 cv2.rectangle(frame, (x0, y0), (x1, y1), col, 2)

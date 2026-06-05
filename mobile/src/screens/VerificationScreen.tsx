@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Banner, Button, Snackbar, Text } from 'react-native-paper';
+import { Banner, Snackbar, Text } from 'react-native-paper';
 import {
   Camera,
   useCameraDevice,
@@ -8,37 +8,67 @@ import {
 } from 'react-native-vision-camera';
 import { usePersonnelRepository } from '../db/repositories/PersonnelRepository';
 import { useVerificationService, type VerificationEvidence } from '../services/VerificationService';
-import { useVerificationFrameOutput, type VerificationFrameSample } from '../ml/frameProcessor';
-import { loadFaceDetectorModel, loadAntispoofModel, loadEmbeddingModel } from '../ml/modelAssets';
+import {
+  useVerificationFrameOutput,
+  type FrameMode,
+  type VerificationFrameSample,
+} from '../ml/frameProcessor';
+import {
+  loadFaceDetectorModel,
+  loadFaceLandmarksModel,
+  loadAntispoofModel,
+  loadEmbeddingModel,
+} from '../ml/modelAssets';
 import {
   LivenessDetector,
   type CaptureFrameSample,
+  type LivenessReason,
   type LivenessResult,
 } from '../ml/LivenessDetector';
 import { EmbeddingModel } from '../ml/EmbeddingModel';
-import { useDelayedFlag } from '../components/useDelayedFlag';
-import { LIVENESS_CAPTURE_WINDOW_MS, LIVENESS_CAPTURE_POLL_MS, EMBEDDING_DIM } from '../constants';
+import {
+  EMBEDDING_DIM,
+  FACE_MIN_QUALITY_SCORE,
+  FACE_GOOD_QUALITY_SCORE,
+  LIVENESS_BLINK_FRAMES,
+  LIVENESS_MOVE_RATIO_THRESHOLD,
+  LIVENESS_INTERACTION_WINDOW_MS,
+  LIVENESS_EXECUTION_BURST_FRAMES,
+  LIVENESS_EXECUTION_MAX_MS,
+  VERIFY_TRIGGER_PRESENT_FRAMES,
+  VERIFY_REARM_ABSENCE_FRAMES,
+  VERIFY_REARM_COOLDOWN_MS,
+} from '../constants';
 import type { BoxedTfliteModel } from '../ml/tfliteRuntime';
 import type { DetectedFace } from '../services/VerificationService';
 import type { Personnel } from '../models/Personnel';
 import type { VerificationRecord } from '../models/VerificationRecord';
-import VerificationResultOverlay from '../components/VerificationResultOverlay';
+import VerificationStatusBanner from '../components/VerificationStatusBanner';
 
 // Placeholder device identity; the real per-install device id is provided by
 // AuthService / Cognito Identity in Phase 5 (T046).
 const DEVICE_ID = 'local-device';
 
 /**
- * Captures verification evidence from the live frame stream.
+ * Continuous, hands-free verification — a staged, blink-triggered pipeline that runs the
+ * heavy models only when they're needed and keeps the per-attempt COMPUTE under the 1 s
+ * budget (decoupled from the generous wall-clock "wait for the human to blink"):
  *
- * The `useVerificationFrameOutput` worklet (frameProcessor.ts) runs BlazeFace
- * detection and — during the "Start Verification" window — the Antispoof passive
- * liveness model on the SAME frame buffer. The screen collects those per-frame
- * samples and reduces them via `LivenessDetector.passiveLiveness`; `EmbeddingModel`
- * (zeroed stub until T099) supplies the query embedding. The result is the
- * `VerificationEvidence` consumed by VerificationService (T036).
+ *   Phase 1 searching  (mode 'detect')   — BlazeFace only. Wait for ONE large, centered,
+ *                                           good-quality face held for a few frames.
+ *   Phase 2 interacting (mode 'interact')— prompt "Blink to verify"; run FaceMesh (EAR)
+ *                                           over the Interaction Window. A detected blink
+ *                                           (primary) — or natural head movement (fallback)
+ *                                           — advances to Phase 3. No blink/movement in the
+ *                                           window ⇒ timeout → back to Phase 1.
+ *   Phase 3 executing   (mode 'execute')  — the one-shot Execution Window: a short BURST of
+ *                                           frames runs Antispoof + MobileFaceNet on the
+ *                                           SAME buffers. Antispoof is aggregated (trimmed
+ *                                           mean — robust to single-frame jitter); the
+ *                                           sharpest frame's embedding is matched. Banner.
+ *   …then re-arm (subject leaves, or a short cooldown) → Phase 1, forever.
  *
- * Overridable as a prop so the screen flow is testable without the worklet runtime.
+ * `captureEvidence` is an optional override so the flow is testable without the worklet.
  */
 export type CaptureEvidence = () => Promise<VerificationEvidence>;
 
@@ -46,7 +76,16 @@ export interface VerificationScreenProps {
   captureEvidence?: CaptureEvidence;
 }
 
-type Phase = 'idle' | 'capturing';
+type Phase = 'searching' | 'interacting' | 'executing';
+
+const MODE: Record<Phase, FrameMode> = {
+  searching: 'detect',
+  interacting: 'interact',
+  executing: 'execute',
+};
+
+const coarseReason = (liveness: LivenessResult): LivenessReason =>
+  liveness === 'live' ? 'live' : liveness === 'spoof' ? 'spoof' : 'no_movement';
 
 export default function VerificationScreen({ captureEvidence }: VerificationScreenProps) {
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -54,19 +93,18 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
   const personnelRepo = usePersonnelRepository();
   const { verify } = useVerificationService();
 
-  const [phase, setPhase] = useState<Phase>('idle');
+  const [phase, setPhase] = useState<Phase>('searching');
   const [result, setResult] = useState<VerificationRecord | null>(null);
   const [matched, setMatched] = useState<Personnel | null>(null);
+  const [livenessReason, setLivenessReason] = useState<LivenessReason | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [snackMsg, setSnackMsg] = useState('');
-  const showCapturingSpinner = useDelayedFlag(phase === 'capturing');
 
-  // Load the boxed models. BlazeFace is required (detection + the live overlay); the
-  // FaceMesh (active blink) and Antispoof (passive texture) models back the two liveness
-  // layers — load best-effort, but a missing model means that layer can't pass, so the
-  // verdict falls to inconclusive (fail-closed). Embedding (MobileFaceNet) is still a
-  // zeroed stub until T099; it must run in the same worklet pass when it lands so the
-  // matched identity stays bound to the same frame proven live.
+  // All four models load best-effort. BlazeFace is required (Phase 1); FaceMesh backs the
+  // blink check (Phase 2); Antispoof + MobileFaceNet back the execution burst (Phase 3). A
+  // missing liveness model fails closed (that layer can't pass → liveness_failed).
   const [detectorModel, setDetectorModel] = useState<BoxedTfliteModel | null>(null);
+  const [landmarksModel, setLandmarksModel] = useState<BoxedTfliteModel | null>(null);
   const [antispoofModel, setAntispoofModel] = useState<BoxedTfliteModel | null>(null);
   const [embedderModel, setEmbedderModel] = useState<BoxedTfliteModel | null>(null);
   useEffect(() => {
@@ -76,6 +114,11 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
         if (!cancelled) setDetectorModel(m);
       })
       .catch(() => setSnackMsg('Failed to load face detection model.'));
+    loadFaceLandmarksModel()
+      .then((m) => {
+        if (!cancelled) setLandmarksModel(m);
+      })
+      .catch(() => console.warn('[verify] landmarks model failed to load; blink check disabled'));
     loadAntispoofModel()
       .then((m) => {
         if (!cancelled) setAntispoofModel(m);
@@ -91,80 +134,75 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
     };
   }, []);
 
-  // Per-frame liveness evidence from the worklet, gathered during the capture window
-  // only. Each sample carries face presence + EAR (active) + antispoof real-prob
-  // (passive); `reduceCapture` fuses the window with a continuous-presence gate.
-  const samplesRef = useRef<CaptureFrameSample[]>([]);
-  const bestFaceRef = useRef<DetectedFace | null>(null);
-  // Raw int8 MobileFaceNet output from the SAME frame as the best-quality face — so the
-  // query identity is read from a frame within the proven-live window (not a later one).
-  const bestEmbeddingRef = useRef<number[] | null>(null);
+  // --- State-machine refs: mutated per frame in onSample (no re-render on the hot path).
+  //     phaseRef mirrors `phase` for SYNCHRONOUS reads so transitions take effect on the
+  //     very next sample, not after a React render. ---
+  const phaseRef = useRef<Phase>('searching');
+  const armedRef = useRef(true); // ready to start the FIRST scan immediately
+  const absentStreakRef = useRef(0);
+  const goodStreakRef = useRef(0); // consecutive good (large+centered) faces, Phase 1
+  const lastResultAtRef = useRef(0);
+  const finishingRef = useRef(false);
+  // Phase 2 (blink wait) evidence.
+  const interactStartRef = useRef(0);
+  const interactSamplesRef = useRef<CaptureFrameSample[]>([]);
+  // Phase 3 (execution burst) evidence.
+  const execStartRef = useRef(0);
+  const execRealProbsRef = useRef<number[]>([]);
+  const bestExecFaceRef = useRef<DetectedFace | null>(null);
+  const bestExecEmbeddingRef = useRef<number[] | null>(null);
 
-  const onSample = useCallback((sample: VerificationFrameSample) => {
-    const { face, ear, realProb, embedding } = sample;
-    if (face && (!bestFaceRef.current || face.qualityScore > bestFaceRef.current.qualityScore)) {
-      bestFaceRef.current = face;
-      bestEmbeddingRef.current = embedding;
-    }
-    const box = face?.boundingBox;
-    const buf = samplesRef.current;
-    // Carry the face-box centre + size so reduceCapture can measure head/face MOVEMENT
-    // (the cheap active-liveness signal). `ear` is null now (FaceMesh isn't run).
-    buf.push({
-      facePresent: face != null,
-      ear,
-      realProb,
-      cx: box ? box.x + box.width / 2 : null,
-      cy: box ? box.y + box.height / 2 : null,
-      size: box ? Math.max(box.width, box.height) : null,
-    });
-    if (buf.length > 120) buf.shift();
+  const enterInteracting = useCallback(() => {
+    armedRef.current = false;
+    goodStreakRef.current = 0;
+    interactStartRef.current = Date.now();
+    interactSamplesRef.current = [];
+    phaseRef.current = 'interacting';
+    setPhase('interacting');
+    setResult(null);
+    setMatched(null);
+    setLivenessReason(null);
+    setNotice(null);
   }, []);
 
-  // Detection runs every frame (cheap, for the overlay + movement); antispoof + the
-  // MobileFaceNet embedding run only while 'capturing', fused on the SAME frame buffer
-  // inside the worklet (no swap window between liveness and the identity read). FaceMesh
-  // is not loaded → its block is skipped, so capture frames stay fast for movement.
-  const frameOutput = useVerificationFrameOutput(
-    {
-      detector: detectorModel,
-      landmarks: null,
-      antispoof: antispoofModel,
-      embedder: embedderModel,
-    },
-    phase === 'capturing',
-    onSample,
-  );
-
-  // Default capture: poll the accumulating frames and EXIT EARLY the moment there's a
-  // confident live/spoof verdict (fast recheck) — otherwise give up at the window
-  // ceiling. Active liveness passes on natural head movement OR a blink; antispoof gates.
-  const captureFromFrames = useCallback<CaptureEvidence>(async () => {
-    samplesRef.current = [];
-    bestFaceRef.current = null;
-    bestEmbeddingRef.current = null;
-    const start = Date.now();
-    let liveness: LivenessResult = 'inconclusive';
-    while (Date.now() - start < LIVENESS_CAPTURE_WINDOW_MS) {
-      await new Promise((resolve) => setTimeout(resolve, LIVENESS_CAPTURE_POLL_MS));
-      const verdict = LivenessDetector.reduceCapture(samplesRef.current);
-      if (verdict !== 'inconclusive') {
-        liveness = verdict;
-        break;
-      }
-    }
-    const face = bestFaceRef.current;
-    const raw = bestEmbeddingRef.current;
-    const queryEmbedding = raw ? EmbeddingModel.finalizeEmbedding(raw) : new Float32Array(EMBEDDING_DIM);
-    return { face, liveness, queryEmbedding };
+  const enterExecuting = useCallback(() => {
+    execStartRef.current = Date.now();
+    execRealProbsRef.current = [];
+    bestExecFaceRef.current = null;
+    bestExecEmbeddingRef.current = null;
+    phaseRef.current = 'executing';
+    setPhase('executing');
   }, []);
 
-  const effectiveCapture = captureEvidence ?? captureFromFrames;
+  const backToSearching = useCallback((reArm: boolean) => {
+    phaseRef.current = 'searching';
+    setPhase('searching');
+    goodStreakRef.current = 0;
+    if (reArm) armedRef.current = true;
+  }, []);
 
-  const startVerification = useCallback(async () => {
-    setPhase('capturing');
+  // End-of-burst: reduce the burst's antispoof + embedding into evidence, match, and show
+  // the banner. Stored in a ref so the per-frame onSample stays stable while still calling
+  // the latest closure over verify / personnelRepo / the capture override.
+  const finalizeRef = useRef<() => Promise<void>>(async () => {});
+  finalizeRef.current = async () => {
     try {
-      const evidence = await effectiveCapture();
+      let evidence: VerificationEvidence;
+      let reason: LivenessReason;
+      if (captureEvidence) {
+        evidence = await captureEvidence();
+        reason = coarseReason(evidence.liveness);
+      } else {
+        // Active (blink/movement) already passed in Phase 2 → only the passive antispoof
+        // gate remains, aggregated over the burst.
+        const detailed = LivenessDetector.passiveLivenessDetailed(execRealProbsRef.current);
+        reason = detailed.reason;
+        const raw = bestExecEmbeddingRef.current;
+        const queryEmbedding = raw
+          ? EmbeddingModel.finalizeEmbedding(raw)
+          : new Float32Array(EMBEDDING_DIM);
+        evidence = { face: bestExecFaceRef.current, liveness: detailed.result, queryEmbedding };
+      }
       const record = await verify(evidence, {
         deviceId: DEVICE_ID,
         initiatedAt: new Date().toISOString(),
@@ -174,17 +212,126 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
         : null;
       setMatched(person);
       setResult(record);
+      setLivenessReason(record.outcome === 'liveness_failed' ? reason : null);
+      setNotice(null);
     } catch {
       setSnackMsg('Verification could not be completed. Please try again.');
     } finally {
-      setPhase('idle');
+      lastResultAtRef.current = Date.now();
+      finishingRef.current = false;
     }
-  }, [effectiveCapture, verify, personnelRepo]);
+  };
 
-  const dismissResult = useCallback(() => {
-    setResult(null);
-    setMatched(null);
-  }, []);
+  const onSample = useCallback(
+    (sample: VerificationFrameSample) => {
+      const { face, ear, realProb, embedding } = sample;
+      const present = face != null && face.qualityScore >= FACE_MIN_QUALITY_SCORE;
+      const goodFace = face != null && face.qualityScore >= FACE_GOOD_QUALITY_SCORE;
+      const now = Date.now();
+      absentStreakRef.current = present ? 0 : absentStreakRef.current + 1;
+      const box = face?.boundingBox;
+      const asCaptureSample = (): CaptureFrameSample => ({
+        facePresent: face != null,
+        ear,
+        realProb: null,
+        cx: box ? box.x + box.width / 2 : null,
+        cy: box ? box.y + box.height / 2 : null,
+        size: box ? Math.max(box.width, box.height) : null,
+      });
+
+      switch (phaseRef.current) {
+        case 'searching': {
+          if (!armedRef.current) {
+            // Re-arm to keep scanning continuously: either the subject left the frame, OR
+            // a cooldown elapsed since the last result (so it re-scans without requiring
+            // the person to step away). The growing record count is handled by the backup
+            // sync clearing the queue, not by suppressing re-scans.
+            const left = absentStreakRef.current >= VERIFY_REARM_ABSENCE_FRAMES;
+            const cooled =
+              lastResultAtRef.current > 0 &&
+              now - lastResultAtRef.current >= VERIFY_REARM_COOLDOWN_MS;
+            if (left || cooled) armedRef.current = true;
+          }
+          goodStreakRef.current = goodFace ? goodStreakRef.current + 1 : 0;
+          if (
+            armedRef.current &&
+            !finishingRef.current &&
+            goodStreakRef.current >= VERIFY_TRIGGER_PRESENT_FRAMES
+          ) {
+            enterInteracting();
+          }
+          return;
+        }
+
+        case 'interacting': {
+          interactSamplesRef.current.push(asCaptureSample());
+          // Subject walked away mid-wait → abandon and re-arm for the next person.
+          if (absentStreakRef.current >= VERIFY_REARM_ABSENCE_FRAMES) {
+            backToSearching(true);
+            return;
+          }
+          // PRIMARY: a blink (EAR open→closed→open).
+          const earSeries = interactSamplesRef.current
+            .map((s) => s.ear)
+            .filter((e): e is number => e !== null);
+          if (
+            earSeries.length >= LIVENESS_BLINK_FRAMES &&
+            LivenessDetector.detectBlink(earSeries)
+          ) {
+            enterExecuting();
+            return;
+          }
+          // Window elapsed → FALLBACK to natural head movement, else time out.
+          if (now - interactStartRef.current >= LIVENESS_INTERACTION_WINDOW_MS) {
+            if (
+              LivenessDetector.faceMovement(interactSamplesRef.current) >=
+              LIVENESS_MOVE_RATIO_THRESHOLD
+            ) {
+              enterExecuting();
+              return;
+            }
+            lastResultAtRef.current = now; // brief cooldown before auto-retry
+            backToSearching(false);
+            setNotice('Liveness check timed out — please try again');
+          }
+          return;
+        }
+
+        case 'executing': {
+          if (
+            face &&
+            embedding &&
+            (!bestExecFaceRef.current || face.qualityScore > bestExecFaceRef.current.qualityScore)
+          ) {
+            bestExecFaceRef.current = face;
+            bestExecEmbeddingRef.current = embedding;
+          }
+          if (realProb !== null) execRealProbsRef.current.push(realProb);
+          const enough = execRealProbsRef.current.length >= LIVENESS_EXECUTION_BURST_FRAMES;
+          const overtime = now - execStartRef.current >= LIVENESS_EXECUTION_MAX_MS;
+          if ((enough || overtime) && !finishingRef.current) {
+            finishingRef.current = true;
+            phaseRef.current = 'searching';
+            setPhase('searching');
+            void finalizeRef.current();
+          }
+          return;
+        }
+      }
+    },
+    [enterInteracting, enterExecuting, backToSearching],
+  );
+
+  const frameOutput = useVerificationFrameOutput(
+    {
+      detector: detectorModel,
+      landmarks: landmarksModel,
+      antispoof: antispoofModel,
+      embedder: embedderModel,
+    },
+    MODE[phase],
+    onSample,
+  );
 
   // T039: camera permission denied → guide the operator to grant it.
   if (!hasPermission) {
@@ -214,44 +361,31 @@ export default function VerificationScreen({ captureEvidence }: VerificationScre
 
   return (
     <View style={styles.container}>
-      <Camera
-        style={StyleSheet.absoluteFill}
-        device={device}
-        isActive={!result}
-        outputs={[frameOutput]}
-      />
+      <Camera style={StyleSheet.absoluteFill} device={device} isActive outputs={[frameOutput]} />
 
       <View style={styles.guidanceOverlay} pointerEvents="none">
         <Text variant="titleMedium" style={styles.guidanceText}>
-          {phase === 'capturing' ? 'Look at the camera — move slightly' : 'Position face in frame'}
+          {phase === 'interacting'
+            ? 'Blink to verify'
+            : phase === 'executing'
+              ? 'Hold still…'
+              : 'Position face in frame to verify'}
         </Text>
       </View>
 
-      <View style={styles.controls}>
-        {phase === 'capturing' ? (
-          // 200ms feedback rule (T078): only show the spinner once capture runs long
-          // enough to need it, so an early-exit verdict doesn't flash it.
-          showCapturingSpinner ? (
-            <ActivityIndicator animating size="large" color="white" accessibilityLabel="Verifying" />
-          ) : null
-        ) : (
-          <Button
-            mode="contained"
-            onPress={startVerification}
-            style={styles.startBtn}
-            accessibilityLabel="Start verification"
-          >
-            Start Verification
-          </Button>
-        )}
-      </View>
-
-      {result ? (
-        <VerificationResultOverlay
+      {phase === 'interacting' ? (
+        <VerificationStatusBanner status="prompt" message="Blink to verify" />
+      ) : phase === 'executing' ? (
+        <VerificationStatusBanner status="scanning" />
+      ) : notice ? (
+        <VerificationStatusBanner status="notice" message={notice} />
+      ) : result ? (
+        <VerificationStatusBanner
+          status="result"
           outcome={result.outcome}
+          livenessReason={livenessReason}
           personnel={matched}
           confidenceScore={result.confidenceScore}
-          onDismiss={dismissResult}
         />
       ) : null}
 
@@ -280,12 +414,4 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
   },
-  controls: {
-    position: 'absolute',
-    bottom: 48,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
-  startBtn: { minWidth: 220 },
 });

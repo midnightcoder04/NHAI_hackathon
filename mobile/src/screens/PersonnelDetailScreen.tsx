@@ -98,11 +98,13 @@ export default function PersonnelDetailScreen() {
       bestEmbeddingRef.current = sample.embedding;
     }
   }, []);
-  // Reuse the verification worklet with only detector + embedder (no liveness layers):
-  // detection every frame + MobileFaceNet on the face ROI while the camera modal is open.
+  // Reuse the verification worklet with only detector + embedder (no liveness models):
+  // 'execute' runs detection + MobileFaceNet on the face ROI every frame while the camera
+  // modal is open; the antispoof block self-skips since no antispoof model is supplied.
+  // 'detect' (camera closed) is detection-only and idle-cheap.
   const embeddingOutput = useVerificationFrameOutput(
     { detector: detectorModel, landmarks: null, antispoof: null, embedder: embedderModel },
-    cameraVisible,
+    cameraVisible ? 'execute' : 'detect',
     onSample,
   );
 

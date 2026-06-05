@@ -63,6 +63,7 @@ export default function PersonnelListScreen() {
       />
       <FAB
         icon="plus"
+        accessibilityLabel="Register personnel"
         style={styles.fab}
         onPress={() => navigation.navigate('PersonnelDetail', {})}
       />

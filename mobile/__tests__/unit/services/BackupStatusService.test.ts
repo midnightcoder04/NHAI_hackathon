@@ -8,6 +8,7 @@ import {
   completeJob,
   failJob,
   cancelJob,
+  completeBackupNow,
   getStatus,
   type SyncJobSummary,
 } from '../../../src/services/BackupStatusService';
@@ -194,5 +195,31 @@ describe('BackupStatusService.getStatus', () => {
     expect(status.latestJob).toBeNull();
     expect(status.lastSyncTime).toBeUndefined();
     expect(status.pendingCount).toBe(0);
+  });
+});
+
+describe('BackupStatusService.completeBackupNow', () => {
+  it('clears the pending queue and records a completed job', async () => {
+    mockDb.getFirstAsync.mockResolvedValue({ cnt: 5 });
+    mockCreate.mockResolvedValue({ ...baseJob(), id: 'job-x' });
+
+    const cleared = await completeBackupNow(mockDb as never);
+
+    expect(cleared).toBe(5);
+    expect(mockDb.runAsync).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM sync_outbox'));
+    expect(mockUpdateStatus).toHaveBeenCalledWith(
+      'job-x',
+      expect.objectContaining({ status: 'completed' }),
+    );
+  });
+
+  it('is a no-op when nothing is pending', async () => {
+    mockDb.getFirstAsync.mockResolvedValue({ cnt: 0 });
+
+    const cleared = await completeBackupNow(mockDb as never);
+
+    expect(cleared).toBe(0);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockDb.runAsync).not.toHaveBeenCalled();
   });
 });

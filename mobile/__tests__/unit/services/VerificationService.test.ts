@@ -82,10 +82,10 @@ describe('VerificationService.decideOutcome', () => {
   });
 
   it('given_best_in_low_confidence_band_then_low_confidence_without_matched_id', () => {
-    const res = decideOutcome(evidence(), [candidate('p1', unit(0.55))]);
+    const res = decideOutcome(evidence(), [candidate('p1', unit(0.42))]);
     expect(res.outcome).toBe('low_confidence');
     expect(res.personnelIdMatched).toBeUndefined();
-    expect(res.confidenceScore).toBeCloseTo(0.55);
+    expect(res.confidenceScore).toBeCloseTo(0.42);
   });
 
   it('given_best_below_low_confidence_then_unauthorized', () => {

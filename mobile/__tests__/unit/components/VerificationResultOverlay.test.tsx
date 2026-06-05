@@ -64,7 +64,7 @@ describe('VerificationResultOverlay', () => {
   });
 
   it('given_low_confidence_then_prompts_secondary_check', () => {
-    renderOverlay({ outcome: 'low_confidence', confidenceScore: 0.55 });
+    renderOverlay({ outcome: 'low_confidence', confidenceScore: 0.42 });
     expect(screen.getByText('Low Confidence — Secondary Check Required')).toBeTruthy();
   });
 

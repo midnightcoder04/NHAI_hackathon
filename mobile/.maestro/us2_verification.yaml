@@ -1,0 +1,47 @@
+# T105 (b) — US2 verification: reach the live verification screen (hands-free loop).
+#
+# IMPORTANT LIMITATION: the actual authorized / unauthorized / liveness-failed OUTCOMES
+# require a real face (and a spoof artefact) in front of the camera — Maestro cannot inject
+# camera frames, so it cannot deterministically drive BlazeFace → blink → MobileFaceNet to a
+# verdict. Those outcome paths are covered deterministically by the jest component tests
+# (__tests__/unit/screens/VerificationScreen.test.tsx: authorized · Potential Spoof ·
+# timeout · capture-failure). This flow asserts the screen launches, handles the camera
+# permission, and enters the continuous "position face" loop — the part E2E can own.
+#
+# Run locally (on a device/emulator with a front camera):
+#   maestro test mobile/.maestro/us2_verification.yaml
+appId: com.anonymous.nhaifieldops
+---
+- launchApp
+- tapOn: "Verify personnel" # header action on the personnel list
+
+# Grant the camera permission if the OS prompt shows on first run. Wording varies by
+# Android version, so try the common labels; all optional so the flow passes if already
+# granted.
+- tapOn:
+    text: "While using the app"
+    optional: true
+- tapOn:
+    text: "Allow"
+    optional: true
+- tapOn:
+    text: "Only this time"
+    optional: true
+
+# If permission was previously denied, the in-app banner appears — recover via the button.
+- runFlow:
+    when:
+      visible: "Camera access is required to verify personnel on-site."
+    commands:
+      - tapOn: "Grant Permission"
+      - tapOn:
+          text: "While using the app"
+          optional: true
+      - tapOn:
+          text: "Allow"
+          optional: true
+
+# The hands-free loop is live: guidance prompts the operator to present a face. There is no
+# "Start" button by design (continuous verification).
+- assertVisible: "Position face in frame to verify"
+- assertNotVisible: "Start Verification"
