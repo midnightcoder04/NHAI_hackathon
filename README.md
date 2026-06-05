@@ -12,13 +12,13 @@ NHAI Innovation Hackathon 7.0 submission — an offline-first facial recognition
 
 ### AI Inference Pipeline (Three-Stage TFLite)
 
-Selective quantization — f16 where stability matters, INT8 where NNAPI acceleration is viable; total footprint ~5 MB:
+Selective quantization — f16 where stability matters, INT8 where NNAPI acceleration is viable; total footprint ~4.75 MB:
 
 1. **Face Detection** — Google BlazeFace f16 (~0.22 MB, `blaze_face_short_range_float16.tflite`): bounding box + 6 landmarks; f16 chosen over INT8 to avoid degenerate 8×8 anchor quantization that causes frame-to-frame jitter
 2. **Face Recognition** — MobileFaceNet INT8 (~1.5 MB, `MobileFaceNet_new_latest_int8.tflite`): 128-dim embedding, cosine similarity threshold ~0.6–0.7; NNAPI/Hexagon DSP acceleration
 3. **Dual-Layer Liveness Detection** (~3.0 MB):
-   - *Active*: MediaPipe FaceMesh f16 (~2.4 MB, `face_landmarks_detector_float16.tflite`) — geometric landmark tracking for blink/smile/head-turn
-   - *Passive*: MiniFASNet Antispoof INT8 (~0.63 MB, `antispoof_128x128_int8.tflite`) — texture classifier for photo/screen replay detection
+   - *Active*: MiniFASNet f16 (~2.4 MB, `MiniFASNetV2_float16.tflite`) — geometric landmark tracking for blink/smile/head-turn
+   - *Passive*: Antispoof INT8 (~0.63 MB, `antispoof_128x128_int8.tflite`) — texture classifier for photo/screen replay detection
 
 Performance budget: ~210ms total (BlazeFace f16 ~20ms + MobileFaceNet INT8 ~60ms + MiniFASNet f16 ~100ms + Antispoof INT8 ~30ms)
 

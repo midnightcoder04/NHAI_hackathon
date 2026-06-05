@@ -1,71 +1,55 @@
-# Dependencies
-node_modules/
-
-# Source TFLite model staging folder (large binaries; kept out of git).
-# Anchored with a leading slash so it does NOT match mobile/src/models/ or mobile/assets/models/.
-/models/
-
-# Python tooling (model conversion / testing)
-.venv/
+# Python
 __pycache__/
-*.pyc
-
-# Local scratch / diagnostics
-mobile/_diag.txt
-
-# Expo / React Native
-mobile/.expo/
-mobile/dist/
-mobile/build/
-mobile/android/.gradle/
-mobile/android/app/build/
-mobile/ios/build/
-mobile/ios/Pods/
-mobile/*.jks
-mobile/*.keystore
-
-# Environment
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
 .env
-.env.local
-.env.*.local
-mobile/.env.local
-
-# TypeScript
+.env.*
+*.egg-info/
 dist/
-*.tsbuildinfo
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Terraform
-infra/terraform/.terraform/
-infra/terraform/*.tfstate
-infra/terraform/*.tfstate.*
-infra/terraform/*.tfvars
-infra/terraform/.terraform.lock.hcl
+# Jupyter
+.ipynb_checkpoints/
 
-# Lambda build
-infra/lambda/sync-engine/dist/
+# Node / React Native
+node_modules/
+.expo/
+.expo-shared/
+*.jsbundle
+android/app/build/
+android/build/
+ios/build/
+ios/Pods/
+ios/DerivedData/
+*.xcworkspace/
+*.xcuserdata/
 
-# Logs
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs & temp
 *.log
+*.tmp
+*.temp
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# Test coverage
-coverage/
-
-# Claude Code runtime artifacts
-.claude/scheduled_tasks.lock
-
-# Local evaluation datasets (real PAD capture set — not source; ~6k images)
-LiveSpoofDataset/
-# Regenerable model-conversion artifact (scripts/make_fp16.py)
-models/*_float16_sim.tflite
+# Build artefacts
+*.apk
+*.ipa
+*.aab
