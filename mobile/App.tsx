@@ -3,6 +3,7 @@ import { SQLiteProvider } from 'expo-sqlite';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { PaperProvider } from 'react-native-paper';
+import { nhaiTheme } from './src/components/theme';
 import { runMigrations } from './src/db/migrations';
 import AppNavigator from './src/navigation/AppNavigator';
 
@@ -19,7 +20,7 @@ export default function App() {
   return (
     <Suspense fallback={<LoadingScreen />}>
       <SQLiteProvider databaseName="nhai.db" onInit={runMigrations} useSuspense>
-        <PaperProvider>
+        <PaperProvider theme={nhaiTheme}>
           <StatusBar style="auto" />
           <AppNavigator />
         </PaperProvider>

@@ -183,3 +183,69 @@ aws lambda update-function-code \
 | SQS messages stuck in DLQ | Check Lambda CloudWatch logs; common causes: RDS connection timeout, schema mismatch |
 | Face matching always returns "no match" | Verify embeddings are stored (not null) in `face_image` table; re-register personnel if embeddings are missing |
 | S3 pre-signed URL expired | Pre-signed URLs valid 15 min; retry the image upload flow |
+
+---
+
+## Local Lambda Integration Testing with LocalStack (T079)
+
+Run AWS services locally for Lambda integration tests without a real AWS account.
+
+### Start LocalStack
+
+```bash
+cd infra
+docker compose up -d
+```
+
+LocalStack boots with S3, SQS, and Lambda on `http://localhost:4566`. The init script
+`infra/localstack/init/01_bootstrap.sh` automatically creates:
+- S3 bucket: `nhai-face-images-000000000000`
+- SQS FIFO queue: `nhai-sync-queue.fifo`
+- SQS DLQ: `nhai-sync-dlq.fifo`
+
+### Configure Lambda for LocalStack
+
+```bash
+# Override endpoint in Lambda env for local testing
+export AWS_ENDPOINT_URL=http://localhost:4566
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=ap-south-1
+
+cd infra/lambda/sync-engine
+pnpm build
+node dist/handler.js   # or run via the LocalStack Lambda invoker
+```
+
+### Configure Mobile for LocalStack
+
+In `mobile/.env.local`:
+```
+SYNC_API_BASE_URL=http://10.0.2.2:4566  # Android emulator → host LocalStack
+DEVICE_ID=test-device-001
+```
+
+(`10.0.2.2` is the Android emulator alias for `localhost` on the host machine.)
+
+### Verify Resources
+
+```bash
+# List S3 buckets
+awslocal s3 ls
+
+# List SQS queues
+awslocal sqs list-queues
+
+# Send a test message to the FIFO queue
+awslocal sqs send-message \
+  --queue-url http://localhost:4566/000000000000/nhai-sync-queue.fifo \
+  --message-body '{"test": true}' \
+  --message-group-id test \
+  --message-deduplication-id $(date +%s)
+```
+
+### Shut Down
+
+```bash
+cd infra && docker compose down
+```

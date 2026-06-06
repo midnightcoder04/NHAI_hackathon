@@ -509,31 +509,39 @@ export async function runDispatchCycle(db: Db): Promise<void> {
   }
 
   if (response.status === 400) {
-    // T052: Validation error — parse details and mark offending records failed
+    // T052/T076: Validation error — log full details, mark offending records failed,
+    // reset healthy records to pending so they are retried in the next cycle.
     const body = (await response.json()) as SyncBatchResponse400;
-    console.warn(`[SyncService] Batch validation error: ${body.message}`);
+    console.warn(`[SyncService] Batch validation error: ${body.message}`, body.details);
 
-    // Build set of offending record IDs from detail field paths (e.g. "personnel[0].id")
-    const offendingIds = new Set<string>();
+    // Build map: outboxId → field-level error message, from array-indexed field paths
+    const offendingErrors = new Map<string, string>();
     for (const detail of body.details) {
-      const match = detail.field.match(/\[(\d+)\]/);
+      const match = detail.field.match(/^(\w+)\[(\d+)\]/);
       if (match) {
-        const idx = parseInt(match[1], 10);
-        const prefix = detail.field.split('[')[0];
+        const prefix = match[1];
+        const idx = parseInt(match[2], 10);
         let offendingEntry: SyncOutboxEntry | undefined;
         if (prefix === 'personnel') offendingEntry = personnelEntries[idx];
         else if (prefix === 'verificationRecords') offendingEntry = verificationEntries[idx];
         else if (prefix === 'faceImages') offendingEntry = faceImageEntries[idx];
-        if (offendingEntry) offendingIds.add(offendingEntry.id);
+        if (offendingEntry) {
+          offendingErrors.set(offendingEntry.id, detail.issue ?? body.message);
+        }
       }
     }
 
-    const firstDetailMsg = body.details[0]?.issue ?? body.message;
     for (const e of successfulEntries) {
-      if (offendingIds.has(e.id)) {
-        await dbMarkFailed(db, e.id, firstDetailMsg);
+      const fieldError = offendingErrors.get(e.id);
+      if (fieldError) {
+        // This record was rejected — mark failed with the specific field error
+        await dbMarkFailed(db, e.id, fieldError);
       } else {
-        await handleEntryFailureWithRetry(db, e, `Batch rejected: ${body.message}`);
+        // Healthy record — reset to pending so it goes out in the next cycle
+        await db.runAsync(
+          `UPDATE sync_outbox SET status = 'pending', dispatched_at = NULL WHERE id = ?`,
+          [e.id],
+        );
       }
     }
     if (jobId) {

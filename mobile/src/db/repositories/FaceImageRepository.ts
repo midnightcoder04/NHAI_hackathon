@@ -3,25 +3,35 @@ import type { SQLiteBindValue } from 'expo-sqlite';
 import type { FaceImage } from '../../models/FaceImage';
 import { generateUUID } from '../../utils/uuid';
 import { useSyncOutboxRepository } from './SyncOutboxRepository';
+import { encryptBytes, decryptBytes } from '../../services/CryptoService';
 
-function embeddingToBlob(embedding: Float32Array | null): Uint8Array | null {
+async function embeddingToBlob(embedding: Float32Array | null): Promise<Uint8Array | null> {
   if (!embedding) return null;
-  return new Uint8Array(embedding.buffer);
+  const raw = new Uint8Array(embedding.buffer);
+  return encryptBytes(raw);
 }
 
-function blobToEmbedding(blob: unknown): Float32Array | null {
+async function blobToEmbedding(blob: unknown): Promise<Float32Array | null> {
   if (!blob) return null;
-  if (blob instanceof Uint8Array) return new Float32Array(blob.buffer);
-  if (blob instanceof ArrayBuffer) return new Float32Array(blob);
-  return null;
+  let bytes: Uint8Array;
+  if (blob instanceof Uint8Array) bytes = blob;
+  else if (blob instanceof ArrayBuffer) bytes = new Uint8Array(blob);
+  else return null;
+  try {
+    const decrypted = await decryptBytes(bytes);
+    return new Float32Array(decrypted.buffer);
+  } catch {
+    // Fallback for unencrypted legacy blobs
+    return new Float32Array(bytes.buffer);
+  }
 }
 
-function rowToFaceImage(row: Record<string, unknown>): FaceImage {
+async function rowToFaceImage(row: Record<string, unknown>): Promise<FaceImage> {
   return {
     id: row.id as string,
     personnelId: row.personnel_id as string,
     imagePath: row.image_path as string,
-    embedding: blobToEmbedding(row.embedding),
+    embedding: await blobToEmbedding(row.embedding),
     s3Key: (row.s3_key as string | null) ?? undefined,
     createdAt: row.created_at as string,
     syncStatus: row.sync_status as FaceImage['syncStatus'],
@@ -34,7 +44,7 @@ export function useFaceImageRepository() {
 
   async function create(fi: Omit<FaceImage, 'id'>): Promise<FaceImage> {
     const id = generateUUID();
-    const embeddingBlob = embeddingToBlob(fi.embedding);
+    const embeddingBlob = await embeddingToBlob(fi.embedding);
     const record: FaceImage = { ...fi, id };
 
     await db.withTransactionAsync(async () => {
@@ -60,7 +70,7 @@ export function useFaceImageRepository() {
       'SELECT * FROM face_image WHERE personnel_id = ? ORDER BY created_at DESC',
       [personnelId],
     );
-    return rows.map(rowToFaceImage);
+    return Promise.all(rows.map(rowToFaceImage));
   }
 
   // Full enrolled gallery across all personnel — used by VerificationService to
@@ -69,7 +79,7 @@ export function useFaceImageRepository() {
     const rows = await db.getAllAsync<Record<string, unknown>>(
       'SELECT * FROM face_image ORDER BY created_at DESC',
     );
-    return rows.map(rowToFaceImage);
+    return Promise.all(rows.map(rowToFaceImage));
   }
 
   async function update(

@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS personnel (
   updated_at    TEXT NOT NULL,
   sync_status   TEXT NOT NULL DEFAULT 'pending'
                 CHECK(sync_status IN ('pending','synced','failed')),
-  sync_error    TEXT
+  sync_error    TEXT,
+  tombstoned    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_personnel_sync        ON personnel(sync_status);
 CREATE INDEX IF NOT EXISTS idx_personnel_employee_id ON personnel(employee_id);

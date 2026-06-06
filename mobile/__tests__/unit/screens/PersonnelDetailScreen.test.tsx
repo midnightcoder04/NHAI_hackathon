@@ -15,7 +15,9 @@ jest.mock('@react-navigation/native', () => ({
 jest.mock('react-native-vision-camera', () => ({
   Camera: () => null,
   useCameraDevice: () => undefined,
-  useCameraPermission: () => ({ hasPermission: false, requestPermission: jest.fn() }),
+  // canRequestPermission=true → openCamera will call requestPermission() then open the modal,
+  // which renders the placeholder since hasPermission stays false after the mock resolves.
+  useCameraPermission: () => ({ hasPermission: false, canRequestPermission: true, requestPermission: jest.fn() }),
   usePhotoOutput: () => ({ capturePhotoToFile: jest.fn() }),
 }));
 

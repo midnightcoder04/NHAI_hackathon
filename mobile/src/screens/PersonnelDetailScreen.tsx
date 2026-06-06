@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   ScrollView,
@@ -60,7 +61,7 @@ export default function PersonnelDetailScreen() {
   // text inputs (Android SurfaceView z-orders above the RN view tree).
   const [cameraVisible, setCameraVisible] = useState(false);
 
-  const { hasPermission, requestPermission } = useCameraPermission();
+  const { hasPermission, canRequestPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('front');
   const cameraRef = useRef<CameraRef>(null);
   const photoOutput = usePhotoOutput();
@@ -116,8 +117,15 @@ export default function PersonnelDetailScreen() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personnelId]);
 
-  function openCamera() {
-    if (!hasPermission) requestPermission();
+  async function openCamera() {
+    if (!hasPermission) {
+      if (!canRequestPermission) {
+        // Permanently denied (status='denied'/'restricted') — must open OS settings
+        setSnackMsg('Camera access denied. Please enable it in Settings.');
+        return;
+      }
+      await requestPermission();
+    }
     bestEmbeddingRef.current = null;
     bestQualityRef.current = -1;
     setCameraVisible(true);
@@ -154,7 +162,8 @@ export default function PersonnelDetailScreen() {
       setSnackMsg('All fields are required.');
       return;
     }
-    setSaving(true);
+    // Show loading spinner only after 200 ms to avoid flicker on fast saves
+    const loadingTimer = setTimeout(() => setSaving(true), 200);
     try {
       const now = new Date().toISOString();
 
@@ -186,6 +195,7 @@ export default function PersonnelDetailScreen() {
     } catch {
       setSnackMsg('Save failed. Please try again.');
     } finally {
+      clearTimeout(loadingTimer);
       setSaving(false);
     }
   }
@@ -291,6 +301,7 @@ export default function PersonnelDetailScreen() {
           <View style={styles.cameraPlaceholder}>
             <Text>Camera permission required for photo capture.</Text>
             <Button onPress={requestPermission}>Grant Permission</Button>
+            <Button onPress={() => Linking.openSettings()}>Open Settings</Button>
             <Button onPress={() => setCameraVisible(false)}>Close</Button>
           </View>
         )}
